@@ -1,0 +1,17 @@
+# ETL Pipeline Dependencies
+pandas==2.1.4
+requests==2.31.0
+sqlalchemy==2.0.23
+psycopg2-binary==2.9.9
+snowflake-connector-python==3.6.0
+boto3==1.34.0
+python-dotenv==1.0.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+structlog==23.2.0
+tenacity==8.2.3
+schedule==1.2.0
+click==8.1.7
+pytest==7.4.3
+black==23.11.0
+flake8==6.1.0 

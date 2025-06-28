@@ -1,0 +1,41 @@
+# Database Connections
+# PostgreSQL
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_DATABASE=etl_database
+POSTGRES_USER=etl_user
+POSTGRES_PASSWORD=your_password_here
+
+# Snowflake
+SNOWFLAKE_ACCOUNT=your_account.snowflakecomputing.com
+SNOWFLAKE_USER=etl_user
+SNOWFLAKE_PASSWORD=your_password_here
+SNOWFLAKE_WAREHOUSE=ETL_WH
+SNOWFLAKE_DATABASE=ETL_DB
+SNOWFLAKE_SCHEMA=PUBLIC
+
+# AWS S3
+AWS_ACCESS_KEY_ID=your_access_key
+AWS_SECRET_ACCESS_KEY=your_secret_key
+AWS_REGION=us-east-1
+S3_BUCKET=etl-data-bucket
+
+# API Configuration
+API_BASE_URL=https://api.example.com
+API_KEY=your_api_key_here
+API_TIMEOUT=30
+
+# Logging
+LOG_LEVEL=INFO
+LOG_FILE_PATH=logs/etl_pipeline.log
+
+# ETL Configuration
+BATCH_SIZE=1000
+MAX_RETRIES=3
+RETRY_DELAY=5
+DATA_SOURCE_TYPE=api  # Options: api, csv, mysql, postgresql
+DATA_DESTINATION_TYPE=snowflake  # Options: snowflake, postgresql, s3
+
+# Monitoring
+ENABLE_METRICS=true
+METRICS_PORT=8000 
