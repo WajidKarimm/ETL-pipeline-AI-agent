@@ -327,22 +327,32 @@ def display_results(raw_data, transformed_data, destination):
     if len(transformed_data) > 0:
         st.subheader("📈 Data Visualization")
         
-        # Select column for visualization
-        numeric_cols = transformed_data.select_dtypes(include=['number']).columns
-        if len(numeric_cols) > 0:
-            selected_col = st.selectbox("Select column for visualization", numeric_cols)
+        try:
+            # Select column for visualization - only show numeric columns
+            numeric_cols = transformed_data.select_dtypes(include=['number']).columns
+            if len(numeric_cols) > 0:
+                selected_col = st.selectbox("Select column for visualization", numeric_cols)
+                
+                if selected_col:
+                    # Create histogram
+                    fig = px.histogram(transformed_data, x=selected_col, title=f"Distribution of {selected_col}")
+                    st.plotly_chart(fig, use_container_width=True)
             
-            if selected_col:
-                # Create histogram
-                fig = px.histogram(transformed_data, x=selected_col, title=f"Distribution of {selected_col}")
-                st.plotly_chart(fig, use_container_width=True)
-        
-        # Correlation matrix for numeric columns
-        if len(numeric_cols) > 1:
-            st.subheader("🔗 Correlation Matrix")
-            corr_matrix = transformed_data[numeric_cols].corr()
-            fig = px.imshow(corr_matrix, title="Correlation Matrix")
-            st.plotly_chart(fig, use_container_width=True)
+            # Correlation matrix for numeric columns
+            if len(numeric_cols) > 1:
+                st.subheader("🔗 Correlation Matrix")
+                try:
+                    corr_matrix = transformed_data[numeric_cols].corr()
+                    # Convert to regular Python types for JSON serialization
+                    corr_dict = {str(col1): {str(col2): float(val) for col2, val in row.items()} 
+                               for col1, row in corr_matrix.items()}
+                    fig = px.imshow(corr_matrix, title="Correlation Matrix")
+                    st.plotly_chart(fig, use_container_width=True)
+                except Exception as e:
+                    st.warning(f"Could not display correlation matrix: {str(e)}")
+        except Exception as e:
+            st.warning(f"Could not create data visualizations: {str(e)}")
+            st.info("💡 Try enabling column renaming or field mapping to improve data compatibility.")
     
     # Download options
     st.subheader("💾 Download Results")
@@ -371,18 +381,40 @@ def display_statistics(data):
     
     # Data types
     st.subheader("📋 Data Types")
-    dtype_counts = data.dtypes.value_counts()
-    fig = px.pie(values=dtype_counts.values, names=dtype_counts.index, title="Data Types Distribution")
-    st.plotly_chart(fig, use_container_width=True)
+    try:
+        # Convert data types to strings to avoid serialization issues
+        dtype_counts = data.dtypes.astype(str).value_counts()
+        fig = px.pie(values=dtype_counts.values, names=dtype_counts.index, title="Data Types Distribution")
+        st.plotly_chart(fig, use_container_width=True)
+    except Exception as e:
+        st.warning(f"Could not display data types chart: {str(e)}")
+        # Show data types as text instead
+        st.write("**Data Types:**")
+        for col, dtype in data.dtypes.items():
+            st.write(f"- {col}: {dtype}")
     
     # Missing values
     st.subheader("❓ Missing Values")
-    missing_data = data.isnull().sum()
-    if missing_data.sum() > 0:
-        fig = px.bar(x=missing_data.index, y=missing_data.values, title="Missing Values per Column")
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.success("✅ No missing values found!")
+    try:
+        missing_data = data.isnull().sum()
+        if missing_data.sum() > 0:
+            # Convert to regular Python types for JSON serialization
+            missing_dict = {str(col): int(val) for col, val in missing_data.items()}
+            fig = px.bar(x=list(missing_dict.keys()), y=list(missing_dict.values()), title="Missing Values per Column")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.success("✅ No missing values found!")
+    except Exception as e:
+        st.warning(f"Could not display missing values chart: {str(e)}")
+        # Show missing values as text instead
+        missing_data = data.isnull().sum()
+        if missing_data.sum() > 0:
+            st.write("**Missing Values:**")
+            for col, count in missing_data.items():
+                if count > 0:
+                    st.write(f"- {col}: {count}")
+        else:
+            st.success("✅ No missing values found!")
 
 if __name__ == "__main__":
     main() 
