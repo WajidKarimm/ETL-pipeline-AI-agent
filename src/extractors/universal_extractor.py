@@ -231,21 +231,59 @@ class UniversalExtractor(BaseExtractor):
             pd.DataFrame: Extracted data
         """
         try:
-            # Read in chunks to manage memory
-            chunk_size = 10000  # Adjust based on available memory
+            # Check file size and adjust chunk size accordingly
+            file_size = Path(file_path).stat().st_size
+            file_size_mb = file_size / (1024 * 1024)
+            
+            # Adjust chunk size based on file size
+            if file_size_mb > 500:
+                chunk_size = 5000  # Smaller chunks for very large files
+            elif file_size_mb > 200:
+                chunk_size = 8000  # Medium chunks for large files
+            else:
+                chunk_size = 10000  # Standard chunks for medium files
+            
             chunks = []
             
             # First, read a small sample to determine structure
-            sample_df = pd.read_csv(file_path, nrows=1000, engine='python', on_bad_lines='skip')
+            try:
+                sample_df = pd.read_csv(file_path, nrows=1000, engine='python', on_bad_lines='skip')
+                self.logger.info(f"Sample read successful: {len(sample_df)} rows, {len(sample_df.columns)} columns")
+            except Exception as e:
+                self.logger.warning(f"Sample read failed, trying with different parameters: {str(e)}")
+                # Try with different parameters for problematic files
+                sample_df = pd.read_csv(file_path, nrows=1000, engine='python', on_bad_lines='skip', 
+                                      encoding='latin-1', low_memory=False)
             
-            # Read the full file in chunks
-            for chunk in pd.read_csv(file_path, chunksize=chunk_size, engine='python', on_bad_lines='skip'):
-                chunks.append(chunk)
+            # Read the full file in chunks with error handling
+            chunk_count = 0
+            total_rows = 0
+            
+            try:
+                for chunk in pd.read_csv(file_path, chunksize=chunk_size, engine='python', 
+                                       on_bad_lines='skip', low_memory=False):
+                    chunks.append(chunk)
+                    chunk_count += 1
+                    total_rows += len(chunk)
+                    
+                    # Log progress for very large files
+                    if chunk_count % 10 == 0:
+                        self.logger.info(f"Processed {chunk_count} chunks, {total_rows:,} rows so far")
+                    
+                    # Safety check for extremely large files
+                    if total_rows > 1000000:  # 1 million rows limit
+                        self.logger.warning(f"File too large ({total_rows:,} rows), processing first 1M rows")
+                        break
+                        
+            except Exception as e:
+                self.logger.error(f"Chunked reading failed: {str(e)}")
+                # Fallback to manual parsing for problematic files
+                return self.manual_csv_parse_large(file_path)
             
             # Combine all chunks
             if chunks:
                 result_df = pd.concat(chunks, ignore_index=True)
-                self.logger.info(f"Chunked CSV extraction completed: {len(result_df)} rows")
+                self.logger.info(f"Chunked CSV extraction completed: {len(result_df):,} rows, {len(result_df.columns)} columns")
                 return result_df
             else:
                 return pd.DataFrame()
@@ -253,7 +291,7 @@ class UniversalExtractor(BaseExtractor):
         except Exception as e:
             self.logger.error(f"Chunked CSV extraction failed: {str(e)}")
             # Fallback to manual parsing
-            return self.manual_csv_parse(file_path)
+            return self.manual_csv_parse_large(file_path)
     
     def manual_csv_parse(self, file_path: str) -> pd.DataFrame:
         """
@@ -317,6 +355,97 @@ class UniversalExtractor(BaseExtractor):
         except Exception as e:
             self.logger.error(f"Manual CSV parsing failed: {str(e)}")
             return pd.DataFrame()
+    
+    def manual_csv_parse_large(self, file_path: str) -> pd.DataFrame:
+        """
+        Manual CSV parsing for extremely large or problematic files.
+        
+        Args:
+            file_path: Path to file
+            
+        Returns:
+            pd.DataFrame: Parsed data
+        """
+        try:
+            self.logger.info("Starting manual parsing for large file")
+            
+            # Read file in smaller chunks to avoid memory issues
+            chunk_size = 10000
+            all_data = []
+            line_count = 0
+            
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                # Read header first
+                header_line = f.readline().strip()
+                if not header_line:
+                    return pd.DataFrame({'error': ['Empty file']})
+                
+                # Parse header
+                headers = header_line.split(',')
+                self.logger.info(f"Detected {len(headers)} columns in header")
+                
+                # Read data in chunks
+                chunk_data = []
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('@') and not line.startswith('%'):
+                        # Split by comma and handle quoted values
+                        values = self.parse_csv_line(line)
+                        if len(values) == len(headers):
+                            chunk_data.append(values)
+                            line_count += 1
+                        
+                        # Process chunk when it reaches chunk_size
+                        if len(chunk_data) >= chunk_size:
+                            all_data.extend(chunk_data)
+                            chunk_data = []
+                            self.logger.info(f"Processed {line_count:,} lines")
+                            
+                            # Safety check
+                            if line_count > 500000:  # 500k rows limit
+                                self.logger.warning(f"File too large, processing first 500k rows")
+                                break
+                
+                # Add remaining data
+                if chunk_data:
+                    all_data.extend(chunk_data)
+            
+            if all_data:
+                df = pd.DataFrame(all_data, columns=headers)
+                self.logger.info(f"Manual parsing completed: {len(df):,} rows, {len(df.columns)} columns")
+                return df
+            else:
+                return pd.DataFrame({'error': ['No data could be parsed']})
+                
+        except Exception as e:
+            self.logger.error(f"Manual CSV parsing failed: {str(e)}")
+            return pd.DataFrame({'error': [f'Parsing failed: {str(e)}']})
+    
+    def parse_csv_line(self, line: str) -> List[str]:
+        """
+        Parse a single CSV line, handling quoted values.
+        
+        Args:
+            line: CSV line to parse
+            
+        Returns:
+            List[str]: Parsed values
+        """
+        values = []
+        current_value = ""
+        in_quotes = False
+        
+        for char in line:
+            if char == '"':
+                in_quotes = not in_quotes
+            elif char == ',' and not in_quotes:
+                values.append(current_value.strip())
+                current_value = ""
+            else:
+                current_value += char
+        
+        values.append(current_value.strip())
+        return values
     
     def extract(self, file_path: str, **kwargs) -> pd.DataFrame:
         """

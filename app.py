@@ -390,6 +390,9 @@ def process_data(uploaded_file, destination, null_handling, rename_columns, map_
         # Check file size and warn for very large files
         file_size_mb = uploaded_file.size / (1024 * 1024)
         if file_size_mb > 500:
+            st.warning(f"⚠️ Very large file detected ({file_size_mb:.1f} MB). Processing may take several minutes and use significant memory.")
+            st.info("💡 Consider splitting very large files into smaller chunks for better performance.")
+        elif file_size_mb > 200:
             st.warning(f"⚠️ Large file detected ({file_size_mb:.1f} MB). Processing may take several minutes.")
         
         # Step 1: Extract
@@ -414,12 +417,22 @@ def process_data(uploaded_file, destination, null_handling, rename_columns, map_
             raw_data = extractor.extract(tmp_file_path)
             
             if raw_data.empty or 'error' in raw_data.columns:
-                st.error("❌ No data could be extracted from the file. Please check the file format.")
+                error_msg = raw_data.iloc[0]['error'] if 'error' in raw_data.columns else "No data could be extracted"
+                st.error(f"❌ {error_msg}")
+                if "field larger than field limit" in error_msg:
+                    st.info("💡 This file has very wide columns. Try splitting the file or using a different format.")
+                elif "Unable to allocate" in error_msg:
+                    st.info("💡 File too large for available memory. Try processing a smaller subset or splitting the file.")
+                else:
+                    st.info("💡 Try uploading a different file or check the file format.")
                 return
                 
         except Exception as e:
             st.error(f"❌ Error extracting data: {str(e)}")
-            st.info("💡 Try uploading a different file or check the file format.")
+            if "memory" in str(e).lower():
+                st.info("💡 File too large for available memory. Try processing a smaller subset.")
+            else:
+                st.info("💡 Try uploading a different file or check the file format.")
             return
         finally:
             # Clean up temp file
