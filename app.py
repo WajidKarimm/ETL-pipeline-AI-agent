@@ -674,16 +674,52 @@ def display_results(raw_data, transformed_data, destination):
                         if len(transformed_data) > 100000:
                             # Write CSV in chunks to avoid memory errors
                             chunk_size = 50000
-                            csv_buffer = io.StringIO()
-                            for start in range(0, len(transformed_data), chunk_size):
-                                transformed_data.iloc[start:start+chunk_size].to_csv(csv_buffer, index=False, header=(start==0), mode='a')
-                            csv = csv_buffer.getvalue()
+                            csv_parts = []
+                            
+                            # Create progress bar for large downloads
+                            progress_bar = st.progress(0)
+                            total_chunks = (len(transformed_data) + chunk_size - 1) // chunk_size
+                            
+                            # Write header first
+                            header_csv = transformed_data.head(0).to_csv(index=False)
+                            csv_parts.append(header_csv)
+                            
+                            # Write data in chunks
+                            for i, start in enumerate(range(0, len(transformed_data), chunk_size)):
+                                end = min(start + chunk_size, len(transformed_data))
+                                chunk_csv = transformed_data.iloc[start:end].to_csv(index=False, header=False)
+                                csv_parts.append(chunk_csv)
+                                
+                                # Update progress
+                                progress = (i + 1) / total_chunks
+                                progress_bar.progress(progress)
+                            
+                            csv = ''.join(csv_parts)
+                            progress_bar.empty()
                         else:
                             csv = transformed_data.to_csv(index=False)
                     except Exception as e:
                         st.error(f"❌ Error preparing full CSV download: {str(e)}")
-                        st.info("⚠️ Downloading a sample of 10,000 rows instead.")
-                        csv = transformed_data.sample(n=10000, random_state=42).to_csv(index=False)
+                        st.info("⚠️ Trying alternative download methods...")
+                        
+                        # Try with smaller chunks
+                        try:
+                            chunk_size = 10000
+                            csv_parts = []
+                            header_csv = transformed_data.head(0).to_csv(index=False)
+                            csv_parts.append(header_csv)
+                            
+                            for start in range(0, len(transformed_data), chunk_size):
+                                end = min(start + chunk_size, len(transformed_data))
+                                chunk_csv = transformed_data.iloc[start:end].to_csv(index=False, header=False)
+                                csv_parts.append(chunk_csv)
+                            
+                            csv = ''.join(csv_parts)
+                            st.success("✅ Download prepared with smaller chunks!")
+                        except Exception as e2:
+                            st.warning(f"⚠️ Small chunk method failed: {str(e2)}")
+                            st.info("📥 Downloading a sample of 10,000 rows instead.")
+                            csv = transformed_data.sample(n=10000, random_state=42).to_csv(index=False)
             else:
                 csv = transformed_data.to_csv(index=False)
             st.download_button(
