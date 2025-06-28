@@ -1,4 +1,6 @@
-# Modular ETL Pipeline
+# ETL-pipeline-AI-agent
+
+An AI-powered ETL agent that builds and maintains scalable data pipelines from natural language instructions, automating development and enabling seamless team collaboration.
 
 ## Overview
 This project provides a modular, production-ready ETL (Extract, Transform, Load) pipeline in Python. It supports extracting data from REST APIs or CSV files, transforming the data (cleaning, mapping, renaming), and loading it into Snowflake, PostgreSQL, or AWS S3.
@@ -66,4 +68,4 @@ See `env_example.txt` for all required variables (API keys, DB credentials, etc)
 - Add monitoring/metrics endpoints if required.
 
 ---
-For questions or contributions, please open an issue or pull request. 
+For questions or contributions, please open an issue or pull request.
