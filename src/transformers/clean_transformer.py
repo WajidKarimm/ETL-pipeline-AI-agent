@@ -178,7 +178,7 @@ class CleanTransformer(BaseTransformer):
         
         return data
 
-    def handle_duplicates(self, data: pd.DataFrame) -> pd.DataFrame:
+    def handle_duplicate_rows(self, data: pd.DataFrame) -> pd.DataFrame:
         """
         Handle duplicate rows if configured.
         
@@ -259,7 +259,7 @@ class CleanTransformer(BaseTransformer):
             df = self.apply_column_renaming(df)
             
             # Step 5: Handle duplicates
-            df = self.handle_duplicates(df)
+            df = self.handle_duplicate_rows(df)
             
             # Validate output
             if not self.validate_output_data(df):
