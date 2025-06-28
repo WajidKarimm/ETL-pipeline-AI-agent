@@ -122,6 +122,16 @@ def main():
             max_retries = st.number_input("Max Retries", min_value=1, max_value=10, value=3)
             log_level = st.selectbox("Log Level", ["INFO", "DEBUG", "WARNING", "ERROR"])
             
+            # Data organization options
+            st.subheader("📊 Data Organization")
+            organize_data = st.checkbox("Organize Data Structure", value=True, 
+                                      help="Sort columns by type, reorder rows, add metadata, and ensure consistent formatting")
+            
+            if organize_data:
+                st.info("✅ Data will be organized with: Column sorting, row ordering, metadata columns, and consistent formatting")
+            else:
+                st.warning("⚠️ Data organization disabled - raw structure will be preserved")
+            
             # CSV specific options
             if data_source == "CSV File":
                 st.subheader("📄 CSV Options")
@@ -174,7 +184,7 @@ def main():
                 
                 # Process the file
                 if st.button("🚀 Process Data", type="primary"):
-                    process_data(uploaded_file, data_destination, null_handling, rename_columns, map_fields, handle_duplicates)
+                    process_data(uploaded_file, data_destination, null_handling, rename_columns, map_fields, handle_duplicates, organize_data)
         
         elif data_source == "API Endpoint":
             st.info("API integration coming soon! For now, please use file upload.")
@@ -333,7 +343,7 @@ def main():
                 
                 with st.spinner("Running ETL pipeline with AI assistance..."):
                     # Process data first
-                    process_data(uploaded_file, data_destination, null_handling, rename_columns, map_fields, handle_duplicates)
+                    process_data(uploaded_file, data_destination, null_handling, rename_columns, map_fields, handle_duplicates, organize_data)
                     
                     # Silent background learning
                     if ai_enabled and 'processed_data' in st.session_state and st.session_state.processed_data is not None:
@@ -347,7 +357,8 @@ def main():
                                 'data_types': {},
                                 'remove_nulls': null_handling != "Keep all data",
                                 'rename_columns': rename_columns,
-                                'destination_config': {}
+                                'destination_config': {},
+                                'organize_data': organize_data
                             }
                             
                             # Silent background learning
@@ -379,7 +390,7 @@ def main():
         else:
             st.warning("Please upload a file first!")
 
-def process_data(uploaded_file, destination, null_handling, rename_columns, map_fields, handle_duplicates):
+def process_data(uploaded_file, destination, null_handling, rename_columns, map_fields, handle_duplicates, organize_data):
     """Process the uploaded data through the ETL pipeline."""
     
     try:
@@ -450,7 +461,8 @@ def process_data(uploaded_file, destination, null_handling, rename_columns, map_
         # Prepare transformation config with conservative settings
         transform_config = {
             'dropna_axis': 0,
-            'handle_duplicates': handle_duplicates
+            'handle_duplicates': handle_duplicates,
+            'organize_data': organize_data
         }
         
         # Handle null removal based on user selection
@@ -560,6 +572,19 @@ def display_results(raw_data, transformed_data, destination):
         if len(raw_data) > 0:
             reduction_pct = (rows_removed / len(raw_data)) * 100
             st.metric("Reduction %", f"{reduction_pct:.1f}%")
+    
+    # Data organization information
+    if st.session_state.get('transform_config', {}).get('organize_data', False):
+        st.success("🎯 **Data Organization Applied:**")
+        st.info("""
+        ✅ **Column Sorting:** ID → Date → Categorical → Numeric → Text  
+        ✅ **Row Ordering:** Logical sorting by ID, date, or category  
+        ✅ **Metadata Columns:** Added completeness and text length metrics  
+        ✅ **Consistent Formatting:** Standardized case and precision  
+        ✅ **Data Type Optimization:** Proper date and numeric formatting
+        """)
+    else:
+        st.info("📋 **Raw Data Structure:** Original column order and formatting preserved")
     
     # Data visualization
     if len(transformed_data) > 0:

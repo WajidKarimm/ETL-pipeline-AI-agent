@@ -26,6 +26,7 @@ class CleanTransformer(BaseTransformer):
         self.dropna_how = (config or {}).get('dropna_how', 'any')
         self.data_validation = (config or {}).get('data_validation', True)
         self.handle_duplicates = (config or {}).get('handle_duplicates', True)
+        self.organize_data = (config or {}).get('organize_data', True)
 
     def validate_input_data(self, data: pd.DataFrame) -> bool:
         """
@@ -270,6 +271,13 @@ class CleanTransformer(BaseTransformer):
             # Step 5: Handle duplicates
             df = self.handle_duplicate_rows(df)
             
+            # Step 6: Organize data structure for better readability (if enabled)
+            if self.organize_data:
+                df = self.organize_data_structure(df)
+                self.logger.info("Data organization applied")
+            else:
+                self.logger.info("Data organization skipped")
+            
             # Validate output
             if not self.validate_output_data(df):
                 self.logger.warning("Output data validation failed, but continuing")
@@ -309,3 +317,251 @@ class CleanTransformer(BaseTransformer):
         }
         
         return summary 
+
+    def organize_data_structure(self, data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Organize data structure for better readability and analysis.
+        
+        Args:
+            data: Input DataFrame
+            
+        Returns:
+            pd.DataFrame: Well-organized DataFrame
+        """
+        try:
+            # 1. Sort columns by type and importance
+            data = self.sort_columns_by_type(data)
+            
+            # 2. Reorder rows for better organization
+            data = self.sort_rows_logically(data)
+            
+            # 3. Format data types appropriately
+            data = self.format_data_types(data)
+            
+            # 4. Add metadata columns if useful
+            data = self.add_metadata_columns(data)
+            
+            # 5. Ensure consistent formatting
+            data = self.ensure_consistent_formatting(data)
+            
+            self.logger.info("Data structure organized", 
+                           final_columns=list(data.columns),
+                           final_rows=len(data))
+            
+            return data
+            
+        except Exception as e:
+            self.logger.error(f"Error organizing data structure: {str(e)}")
+            return data
+    
+    def sort_columns_by_type(self, data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Sort columns by data type and importance.
+        
+        Args:
+            data: Input DataFrame
+            
+        Returns:
+            pd.DataFrame: DataFrame with sorted columns
+        """
+        try:
+            # Identify column types
+            id_columns = []
+            date_columns = []
+            numeric_columns = []
+            categorical_columns = []
+            text_columns = []
+            
+            for col in data.columns:
+                col_lower = col.lower()
+                
+                # ID columns (usually first)
+                if any(keyword in col_lower for keyword in ['id', 'key', 'index', 'uuid']):
+                    id_columns.append(col)
+                # Date columns
+                elif any(keyword in col_lower for keyword in ['date', 'time', 'created', 'updated', 'timestamp']):
+                    date_columns.append(col)
+                # Numeric columns
+                elif data[col].dtype in ['int64', 'float64', 'int32', 'float32']:
+                    numeric_columns.append(col)
+                # Categorical columns (low cardinality)
+                elif data[col].dtype == 'object' and data[col].nunique() <= 50:
+                    categorical_columns.append(col)
+                # Text columns (high cardinality)
+                else:
+                    text_columns.append(col)
+            
+            # Reorder columns: ID, Date, Categorical, Numeric, Text
+            ordered_columns = id_columns + date_columns + categorical_columns + numeric_columns + text_columns
+            
+            # Ensure all columns are included
+            remaining_columns = [col for col in data.columns if col not in ordered_columns]
+            ordered_columns.extend(remaining_columns)
+            
+            return data[ordered_columns]
+            
+        except Exception as e:
+            self.logger.warning(f"Error sorting columns: {str(e)}")
+            return data
+    
+    def sort_rows_logically(self, data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Sort rows in a logical order for better readability.
+        
+        Args:
+            data: Input DataFrame
+            
+        Returns:
+            pd.DataFrame: DataFrame with sorted rows
+        """
+        try:
+            # Find the best column to sort by
+            sort_columns = []
+            
+            # Priority 1: ID columns
+            id_cols = [col for col in data.columns if any(keyword in col.lower() for keyword in ['id', 'key', 'index'])]
+            if id_cols:
+                sort_columns.extend(id_cols)
+            
+            # Priority 2: Date columns
+            date_cols = [col for col in data.columns if any(keyword in col.lower() for keyword in ['date', 'time', 'created'])]
+            if date_cols:
+                sort_columns.extend(date_cols)
+            
+            # Priority 3: First categorical column
+            categorical_cols = [col for col in data.columns if data[col].dtype == 'object' and data[col].nunique() <= 50]
+            if categorical_cols:
+                sort_columns.append(categorical_cols[0])
+            
+            # Sort by the identified columns
+            if sort_columns:
+                # Remove duplicates while preserving order
+                unique_sort_cols = []
+                for col in sort_columns:
+                    if col not in unique_sort_cols:
+                        unique_sort_cols.append(col)
+                
+                # Sort the data
+                data = data.sort_values(by=unique_sort_cols, na_position='last')
+                self.logger.info(f"Rows sorted by: {unique_sort_cols}")
+            
+            return data
+            
+        except Exception as e:
+            self.logger.warning(f"Error sorting rows: {str(e)}")
+            return data
+    
+    def format_data_types(self, data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Format data types appropriately for better organization.
+        
+        Args:
+            data: Input DataFrame
+            
+        Returns:
+            pd.DataFrame: DataFrame with formatted data types
+        """
+        try:
+            for col in data.columns:
+                col_lower = col.lower()
+                
+                # Convert date-like columns
+                if any(keyword in col_lower for keyword in ['date', 'time', 'created', 'updated']):
+                    try:
+                        data[col] = pd.to_datetime(data[col], errors='coerce')
+                    except:
+                        pass
+                
+                # Convert numeric columns
+                elif data[col].dtype == 'object':
+                    # Try to convert to numeric if possible
+                    try:
+                        numeric_data = pd.to_numeric(data[col], errors='coerce')
+                        # Only convert if more than 80% of values are numeric
+                        if numeric_data.notna().sum() / len(data) > 0.8:
+                            data[col] = numeric_data
+                    except:
+                        pass
+                
+                # Format boolean columns
+                elif data[col].dtype == 'bool':
+                    data[col] = data[col].astype('bool')
+            
+            self.logger.info("Data types formatted")
+            return data
+            
+        except Exception as e:
+            self.logger.warning(f"Error formatting data types: {str(e)}")
+            return data
+    
+    def add_metadata_columns(self, data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Add useful metadata columns for better organization.
+        
+        Args:
+            data: Input DataFrame
+            
+        Returns:
+            pd.DataFrame: DataFrame with metadata columns
+        """
+        try:
+            # Add row number if no ID column exists
+            id_cols = [col for col in data.columns if any(keyword in col.lower() for keyword in ['id', 'key', 'index'])]
+            if not id_cols:
+                data.insert(0, 'row_id', range(1, len(data) + 1))
+                self.logger.info("Added row_id column")
+            
+            # Add data quality indicators
+            if len(data.columns) > 2:
+                # Calculate completeness percentage for each row
+                completeness = (data.notna().sum(axis=1) / len(data.columns) * 100).round(2)
+                data['completeness_pct'] = completeness
+                
+                # Add row length (for text columns)
+                text_cols = [col for col in data.columns if data[col].dtype == 'object']
+                if text_cols:
+                    avg_text_length = data[text_cols].astype(str).str.len().mean(axis=1).round(1)
+                    data['avg_text_length'] = avg_text_length
+                
+                self.logger.info("Added metadata columns: completeness_pct, avg_text_length")
+            
+            return data
+            
+        except Exception as e:
+            self.logger.warning(f"Error adding metadata columns: {str(e)}")
+            return data
+    
+    def ensure_consistent_formatting(self, data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Ensure consistent formatting across the dataset.
+        
+        Args:
+            data: Input DataFrame
+            
+        Returns:
+            pd.DataFrame: Consistently formatted DataFrame
+        """
+        try:
+            # Standardize string formatting
+            for col in data.columns:
+                if data[col].dtype == 'object':
+                    # Remove leading/trailing whitespace
+                    data[col] = data[col].astype(str).str.strip()
+                    
+                    # Standardize case for categorical-like columns
+                    if data[col].nunique() <= 50:
+                        # Convert to title case for consistency
+                        data[col] = data[col].str.title()
+            
+            # Ensure numeric columns have consistent precision
+            for col in data.columns:
+                if data[col].dtype in ['float64', 'float32']:
+                    # Round to 2 decimal places for display
+                    data[col] = data[col].round(2)
+            
+            self.logger.info("Consistent formatting applied")
+            return data
+            
+        except Exception as e:
+            self.logger.warning(f"Error applying consistent formatting: {str(e)}")
+            return data 
