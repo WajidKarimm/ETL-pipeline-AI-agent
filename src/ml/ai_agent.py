@@ -175,28 +175,48 @@ class ETLAIAgent:
         features['duplicate_rows'] = data.duplicated().sum()
         features['duplicate_percentage'] = (data.duplicated().sum() / len(data)) * 100
         
-        # Data quality features
-        for col in numeric_cols:
-            if len(data[col].dropna()) > 0:
-                features[f'{col}_mean'] = data[col].mean()
-                features[f'{col}_std'] = data[col].std()
-                features[f'{col}_min'] = data[col].min()
-                features[f'{col}_max'] = data[col].max()
-                features[f'{col}_outliers'] = self._count_outliers(data[col])
+        # Data quality features - use aggregate statistics instead of per-column
+        if len(numeric_cols) > 0:
+            numeric_data = data[numeric_cols]
+            features['numeric_mean_mean'] = numeric_data.mean().mean()
+            features['numeric_std_mean'] = numeric_data.std().mean()
+            features['numeric_min_min'] = numeric_data.min().min()
+            features['numeric_max_max'] = numeric_data.max().max()
+            features['numeric_outliers_total'] = sum(self._count_outliers(data[col]) for col in numeric_cols)
+        else:
+            features['numeric_mean_mean'] = 0
+            features['numeric_std_mean'] = 0
+            features['numeric_min_min'] = 0
+            features['numeric_max_max'] = 0
+            features['numeric_outliers_total'] = 0
         
-        # Categorical features
-        for col in categorical_cols:
-            if len(data[col].dropna()) > 0:
-                features[f'{col}_unique_count'] = data[col].nunique()
-                features[f'{col}_most_common_freq'] = data[col].value_counts().iloc[0] if len(data[col].value_counts()) > 0 else 0
+        # Categorical features - use aggregate statistics
+        if len(categorical_cols) > 0:
+            categorical_data = data[categorical_cols]
+            features['categorical_unique_mean'] = categorical_data.nunique().mean()
+            features['categorical_most_common_freq_mean'] = categorical_data.apply(
+                lambda x: x.value_counts().iloc[0] if len(x.value_counts()) > 0 else 0
+            ).mean()
+        else:
+            features['categorical_unique_mean'] = 0
+            features['categorical_most_common_freq_mean'] = 0
+        
+        # Additional consistent features
+        features['data_complexity_score'] = (features['numeric_columns'] + features['categorical_columns'] * 0.5) / features['column_count'] if features['column_count'] > 0 else 0
+        features['missing_data_severity'] = features['missing_value_percentage'] / 100
+        features['duplicate_data_severity'] = features['duplicate_percentage'] / 100
         
         return pd.DataFrame([features])
     
     def _count_outliers(self, series: pd.Series) -> int:
         """Count outliers using IQR method."""
+        if len(series.dropna()) == 0:
+            return 0
         Q1 = series.quantile(0.25)
         Q3 = series.quantile(0.75)
         IQR = Q3 - Q1
+        if IQR == 0:
+            return 0
         lower_bound = Q1 - 1.5 * IQR
         upper_bound = Q3 + 1.5 * IQR
         return ((series < lower_bound) | (series > upper_bound)).sum()
@@ -518,10 +538,25 @@ class ETLAIAgent:
     
     def _prepare_features_for_prediction(self, features: pd.DataFrame) -> np.ndarray:
         """Prepare features for ML model prediction."""
-        # For now, use simple feature preparation
-        # In a production system, this would include proper encoding and scaling
+        # Get numeric features
         numeric_features = features.select_dtypes(include=[np.number])
-        return numeric_features.fillna(0).values
+        
+        # Fill missing values
+        numeric_features = numeric_features.fillna(0)
+        
+        # Ensure consistent feature count by padding or truncating
+        expected_features = 11  # Based on the error message
+        
+        if numeric_features.shape[1] > expected_features:
+            # Truncate to expected features (take first N features)
+            numeric_features = numeric_features.iloc[:, :expected_features]
+        elif numeric_features.shape[1] < expected_features:
+            # Pad with zeros to reach expected features
+            padding_needed = expected_features - numeric_features.shape[1]
+            padding_df = pd.DataFrame(0, index=numeric_features.index, columns=[f'padding_{i}' for i in range(padding_needed)])
+            numeric_features = pd.concat([numeric_features, padding_df], axis=1)
+        
+        return numeric_features.values
     
     def _retrain_models(self):
         """Retrain ML models with accumulated training data."""

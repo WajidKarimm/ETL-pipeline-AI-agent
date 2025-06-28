@@ -9,9 +9,13 @@ Enhanced with robust error handling and data validation.
 import pandas as pd
 import numpy as np
 from typing import Any, Dict, Optional, List
+import warnings
 
 from .base import BaseTransformer
 from ..logger import get_logger
+
+# Suppress dateutil warnings
+warnings.filterwarnings('ignore', message='Could not infer format, so each element will be parsed individually')
 
 
 class CleanTransformer(BaseTransformer):
@@ -498,11 +502,38 @@ class CleanTransformer(BaseTransformer):
             for col in data.columns:
                 col_lower = col.lower()
                 
-                # Convert date-like columns
+                # Convert date-like columns with better format detection
                 if any(keyword in col_lower for keyword in ['date', 'time', 'created', 'updated']):
                     try:
-                        data[col] = pd.to_datetime(data[col], errors='coerce')
-                    except:
+                        # Try common date formats first to avoid dateutil warnings
+                        common_formats = [
+                            '%Y-%m-%d', '%m/%d/%Y', '%d/%m/%Y', '%Y/%m/%d',
+                            '%Y-%m-%d %H:%M:%S', '%m/%d/%Y %H:%M:%S',
+                            '%d/%m/%Y %H:%M:%S', '%Y/%m/%d %H:%M:%S',
+                            '%Y-%m-%dT%H:%M:%S', '%Y-%m-%dT%H:%M:%S.%f'
+                        ]
+                        
+                        # Try to parse with specific formats first
+                        parsed = False
+                        for fmt in common_formats:
+                            try:
+                                temp_data = pd.to_datetime(data[col], format=fmt, errors='coerce')
+                                # Check if we got any valid dates
+                                if temp_data.notna().sum() > 0:
+                                    data[col] = temp_data
+                                    parsed = True
+                                    break
+                            except:
+                                continue
+                        
+                        # If no specific format worked, use infer_datetime_format with warning suppression
+                        if not parsed:
+                            with warnings.catch_warnings():
+                                warnings.simplefilter("ignore")
+                                data[col] = pd.to_datetime(data[col], infer_datetime_format=True, errors='coerce')
+                            
+                    except Exception as e:
+                        self.logger.debug(f"Could not parse date column {col}: {str(e)}")
                         pass
                 
                 # Convert numeric columns

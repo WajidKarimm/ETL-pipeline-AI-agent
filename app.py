@@ -244,92 +244,155 @@ def main():
                 # AI Data Quality Analysis
                 st.subheader("🔍 Data Quality Analysis")
                 with st.spinner("Analyzing data quality..."):
-                    quality_issues = ai_agent.detect_data_quality_issues(ai_df)
-                if quality_issues:
-                    st.warning(f"Detected {len(quality_issues)} data quality issues:")
-                    for i, issue in enumerate(quality_issues):
-                        with st.expander(f"🚨 {issue.issue_type.upper()} - {issue.severity.upper()}"):
-                            st.write(f"**Description:** {issue.description}")
-                            st.write(f"**Affected Columns:** {', '.join(issue.affected_columns)}")
-                            st.write(f"**Suggested Fix:** {issue.suggested_fix}")
-                            # Auto-apply fixes
-                            if st.button(f"Auto-apply fix for issue {i+1}", key=f"fix_{i}"):
-                                if issue.issue_type == "missing_values":
-                                    for col in issue.affected_columns:
-                                        if col in df.columns:
-                                            df[col] = df[col].fillna(df[col].mode()[0] if df[col].dtype == 'object' else df[col].median())
-                                    st.session_state.processed_data = df
-                                    st.success("Applied missing value fixes!")
-                                    st.rerun()
-                                elif issue.issue_type == "duplicates":
-                                    df = df.drop_duplicates()
-                                    st.session_state.processed_data = df
-                                    st.success("Removed duplicate rows!")
-                                    st.rerun()
-                else:
-                    st.success("✅ No data quality issues detected!")
+                    issues = ai_agent.detect_data_quality_issues(ai_df)
+                    if issues:
+                        st.warning(f"⚠️ Found {len(issues)} data quality issues:")
+                        for issue in issues[:5]:  # Show first 5 issues
+                            st.write(f"• **{issue.issue_type}** ({issue.severity}): {issue.description}")
+                        if len(issues) > 5:
+                            st.write(f"... and {len(issues) - 5} more issues")
+                    else:
+                        st.success("✅ No data quality issues detected!")
+                
                 # AI Transformation Suggestions
-                st.subheader("💡 Smart Suggestions")
-                with st.spinner("Generating suggestions..."):
+                st.subheader("🤖 AI Transformation Suggestions")
+                with st.spinner("Generating transformation suggestions..."):
                     suggestions = ai_agent.suggest_transformations(ai_df)
-                if suggestions:
-                    st.info(f"Found {len(suggestions)} optimization opportunities:")
-                    for i, suggestion in enumerate(suggestions):
-                        with st.expander(f"💡 {suggestion.transformation_type}"):
-                            st.write(f"**Target Column:** {suggestion.target_column}")
-                            st.write(f"**Reasoning:** {suggestion.reasoning}")
-                            if st.button(f"Apply suggestion {i+1}", key=f"suggest_{i}"):
-                                try:
-                                    if suggestion.transformation_type == "convert_to_numeric":
-                                        df[suggestion.target_column] = pd.to_numeric(df[suggestion.target_column], errors='coerce')
-                                    elif suggestion.transformation_type == "convert_to_datetime":
-                                        df[suggestion.target_column] = pd.to_datetime(df[suggestion.target_column], errors='coerce')
-                                    elif suggestion.transformation_type == "fill_missing":
-                                        if suggestion.parameters.get("method") == "forward_fill":
-                                            df[suggestion.target_column] = df[suggestion.target_column].fillna(method='ffill')
-                                    st.session_state.processed_data = df
-                                    st.success(f"Applied {suggestion.transformation_type}!")
-                                    st.rerun()
-                                except Exception as e:
-                                    st.error(f"Failed to apply transformation: {e}")
-                else:
-                    st.info("No optimization suggestions at this time.")
-                # Error Prediction (silent background check)
-                transform_config = st.session_state.get('transform_config', {})
-                field_map = transform_config.get('field_map', {})
-                data_types = {}
-                remove_nulls = transform_config.get('dropna_how') != 'none'
-                rename_columns = 'rename_map' in transform_config
-                predictions = []
-                for old_col, new_col in field_map.items():
-                    if old_col not in df.columns:
-                        predictions.append({
-                            'error_type': 'Missing Column',
-                            'probability': 1.0,
-                            'description': f"Column '{old_col}' not found in data",
-                            'suggestion': f"Check column names or remove mapping for '{old_col}'"
-                        })
-                for col, target_type in data_types.items():
-                    if col in df.columns and target_type == 'numeric' and df[col].dtype == 'object':
-                        try:
-                            pd.to_numeric(df[col], errors='raise')
-                        except:
-                            predictions.append({
-                                'error_type': 'Type Conversion Error',
-                                'probability': 0.9,
-                                'description': f"Cannot convert column '{col}' to numeric",
-                                'suggestion': f"Clean non-numeric values in column '{col}'"
-                            })
-                if predictions:
-                    st.warning(f"⚠️ Potential issues detected:")
-                    for i, prediction in enumerate(predictions):
-                        with st.expander(f"⚠️ {prediction['error_type']}"):
-                            st.write(f"**Description:** {prediction['description']}")
-                            st.write(f"**Suggestion:** {prediction['suggestion']}")
-            except ImportError:
-                st.error("AI features not available. Please install required dependencies.")
+                    if suggestions:
+                        st.info(f"💡 AI suggests {len(suggestions)} transformations:")
+                        for suggestion in suggestions[:3]:  # Show first 3 suggestions
+                            st.write(f"• **{suggestion.transformation_type}** on {suggestion.target_column}: {suggestion.reasoning}")
+                        if len(suggestions) > 3:
+                            st.write(f"... and {len(suggestions) - 3} more suggestions")
+                    else:
+                        st.info("📋 No transformation suggestions at this time.")
+                
+                # AI Error Prediction
+                st.subheader("⚠️ Error Prediction")
+                with st.spinner("Predicting potential errors..."):
+                    transform_config = st.session_state.get('transform_config', {})
+                    predictions = ai_agent.predict_errors(ai_df, transform_config)
+                    if predictions:
+                        st.warning(f"⚠️ AI predicts {len(predictions)} potential errors:")
+                        for prediction in predictions[:3]:  # Show first 3 predictions
+                            st.write(f"• **{prediction.error_type}** ({prediction.probability:.1%}): {prediction.prevention_suggestion}")
+                        if len(predictions) > 3:
+                            st.write(f"... and {len(predictions) - 3} more predictions")
+                    else:
+                        st.success("✅ No potential errors predicted!")
+                
+                # Model Deployment Section
+                st.subheader("🚀 Model Deployment")
+                st.info("Train and deploy ML models from your processed data")
+                
+                # Model deployment options
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # Select target column for prediction
+                    numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+                    categorical_cols = df.select_dtypes(include=['object']).columns.tolist()
+                    
+                    target_column = st.selectbox(
+                        "Select target column for prediction",
+                        options=numeric_cols + categorical_cols,
+                        help="Choose the column you want to predict"
+                    )
+                    
+                    # Select model type
+                    model_type = st.selectbox(
+                        "Select model type",
+                        options=['random_forest', 'logistic_regression', 'linear_regression', 'svm'],
+                        help="Choose the machine learning algorithm"
+                    )
+                
+                with col2:
+                    # Model parameters
+                    if model_type == 'random_forest':
+                        n_estimators = st.slider("Number of trees", 10, 200, 100)
+                        max_depth = st.slider("Max depth", 3, 20, 10)
+                        model_params = {'n_estimators': n_estimators, 'max_depth': max_depth}
+                    elif model_type in ['logistic_regression', 'linear_regression']:
+                        model_params = {}
+                    elif model_type == 'svm':
+                        kernel = st.selectbox("Kernel", ['rbf', 'linear', 'poly'])
+                        model_params = {'kernel': kernel}
+                    
+                    # Deployment name
+                    deployment_name = st.text_input(
+                        "Deployment name",
+                        value=f"{model_type}_{target_column}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                        help="Name for your deployed model"
+                    )
+                
+                # Train and deploy button
+                if st.button("🚀 Train & Deploy Model", type="primary"):
+                    try:
+                        from src.ml.model_deployment import ModelManager
+                        
+                        with st.spinner("Training and deploying model..."):
+                            # Create model manager
+                            manager = ModelManager()
+                            
+                            # Train and deploy
+                            deployment_path = manager.train_and_deploy(
+                                data=df,
+                                target_column=target_column,
+                                model_type=model_type,
+                                deployment_name=deployment_name,
+                                model_params=model_params
+                            )
+                            
+                            st.success(f"✅ Model deployed successfully!")
+                            st.info(f"📁 Deployment path: {deployment_path}")
+                            
+                            # Show deployment info
+                            deployment_info = manager.get_deployment_info(deployment_name)
+                            st.json(deployment_info)
+                            
+                            # Store deployment info in session state
+                            if 'deployments' not in st.session_state:
+                                st.session_state.deployments = {}
+                            st.session_state.deployments[deployment_name] = deployment_info
+                            
+                    except Exception as e:
+                        st.error(f"❌ Model deployment failed: {str(e)}")
+                
+                # Show existing deployments
+                if 'deployments' in st.session_state and st.session_state.deployments:
+                    st.subheader("📋 Deployed Models")
+                    
+                    for name, info in st.session_state.deployments.items():
+                        with st.expander(f"📊 {name}"):
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                st.write(f"**Model Type:** {info['metadata']['model_type']}")
+                                st.write(f"**Target:** {info['metadata']['target_column']}")
+                                st.write(f"**Features:** {len(info['metadata']['features'])}")
+                                st.write(f"**Training Data:** {info['metadata']['training_data_size']:,} rows")
+                            
+                            with col2:
+                                st.write(f"**Accuracy:** {info['metadata']['performance_metrics'].get('accuracy', 'N/A')}")
+                                st.write(f"**Deployed:** {info['deployed_at']}")
+                                
+                                # Make predictions button
+                                if st.button(f"🔮 Make Predictions", key=f"predict_{name}"):
+                                    try:
+                                        # Load sample data for prediction
+                                        sample_data = df.sample(n=min(100, len(df)), random_state=42)
+                                        predictions = manager.predict(name, sample_data)
+                                        
+                                        st.success(f"✅ Predictions made for {len(predictions)} samples")
+                                        st.write("**Sample predictions:**")
+                                        st.write(predictions[:10])  # Show first 10 predictions
+                                        
+                                    except Exception as e:
+                                        st.error(f"❌ Prediction failed: {str(e)}")
+            
             except Exception as e:
-                st.error(f"AI features error: {e}")
+                st.error(f"AI features error: {str(e)}")
+                st.info("💡 Try processing the data again or check the transformation settings.")
         else:
             st.info("📊 Upload and process data to enable AI features!")
 
