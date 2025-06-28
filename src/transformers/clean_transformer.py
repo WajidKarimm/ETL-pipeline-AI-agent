@@ -119,7 +119,7 @@ class CleanTransformer(BaseTransformer):
 
     def apply_field_mapping(self, data: pd.DataFrame) -> pd.DataFrame:
         """
-        Apply field mapping with error handling.
+        Apply field mapping with error handling and large dataset optimization.
         
         Args:
             data: Input DataFrame
@@ -127,35 +127,68 @@ class CleanTransformer(BaseTransformer):
         Returns:
             pd.DataFrame: DataFrame with mapped fields
         """
+        if not self.field_map:
+            return data
+            
+        # Check dataset size for optimization strategy
+        dataset_size = len(data)
+        is_large_dataset = dataset_size > 50000
+        
+        if is_large_dataset:
+            self.logger.info(f"Large dataset detected ({dataset_size:,} rows), using optimized field mapping")
+        
         for col, mapping in self.field_map.items():
             if col in data.columns:
                 try:
                     # Create a copy to avoid modifying original
                     data[col] = data[col].copy()
                     
-                    # Apply mapping with error handling
-                    mapped_values = []
-                    unmapped_values = set()
-                    
-                    for value in data[col]:
-                        if pd.isna(value):
-                            mapped_values.append(np.nan)
-                        elif value in mapping:
-                            mapped_values.append(mapping[value])
-                        else:
-                            # Keep original value if not in mapping
-                            mapped_values.append(value)
-                            unmapped_values.add(value)
-                    
-                    data[col] = mapped_values
-                    
-                    # Log mapping results
-                    if unmapped_values:
-                        self.logger.warning(f"Unmapped values found in column {col}", 
-                                          unmapped_values=list(unmapped_values)[:10])  # Show first 10
-                    
-                    self.logger.info(f"Field mapping applied to {col}", 
-                                   unique_values=list(set(mapped_values) - {np.nan})[:10])
+                    if is_large_dataset:
+                        # Optimized mapping for large datasets using vectorized operations
+                        # Create a mapping Series for efficient lookup
+                        mapping_series = pd.Series(mapping)
+                        
+                        # Apply mapping using pandas map function (vectorized)
+                        mapped_series = data[col].map(mapping_series)
+                        
+                        # Handle unmapped values (keep original)
+                        unmapped_mask = mapped_series.isna() & data[col].notna()
+                        if unmapped_mask.any():
+                            mapped_series[unmapped_mask] = data[col][unmapped_mask]
+                            unmapped_count = unmapped_mask.sum()
+                            self.logger.warning(f"Found {unmapped_count:,} unmapped values in column {col}")
+                        
+                        data[col] = mapped_series
+                        
+                        # Log mapping results (limited for large datasets)
+                        unique_mapped = mapped_series.dropna().unique()
+                        self.logger.info(f"Field mapping applied to {col}", 
+                                       unique_values_count=len(unique_mapped),
+                                       sample_values=list(unique_mapped[:5]))
+                    else:
+                        # Original method for smaller datasets
+                        mapped_values = []
+                        unmapped_values = set()
+                        
+                        for value in data[col]:
+                            if pd.isna(value):
+                                mapped_values.append(np.nan)
+                            elif value in mapping:
+                                mapped_values.append(mapping[value])
+                            else:
+                                # Keep original value if not in mapping
+                                mapped_values.append(value)
+                                unmapped_values.add(value)
+                        
+                        data[col] = mapped_values
+                        
+                        # Log mapping results
+                        if unmapped_values:
+                            self.logger.warning(f"Unmapped values found in column {col}", 
+                                              unmapped_values=list(unmapped_values)[:10])  # Show first 10
+                        
+                        self.logger.info(f"Field mapping applied to {col}", 
+                                       unique_values=list(set(mapped_values) - {np.nan})[:10])
                     
                 except Exception as e:
                     self.logger.error(f"Error mapping field {col}", error=str(e))
