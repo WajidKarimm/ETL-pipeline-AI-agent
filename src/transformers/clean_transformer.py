@@ -584,8 +584,13 @@ class CleanTransformer(BaseTransformer):
                 # Add row length (for text columns)
                 text_cols = [col for col in data.columns if data[col].dtype == 'object']
                 if text_cols:
-                    avg_text_length = data[text_cols].astype(str).str.len().mean(axis=1).round(1)
-                    data['avg_text_length'] = avg_text_length
+                    # Calculate average text length for each row
+                    text_lengths = []
+                    for col in text_cols:
+                        text_lengths.append(data[col].astype(str).str.len())
+                    if text_lengths:
+                        avg_text_length = pd.concat(text_lengths, axis=1).mean(axis=1).round(1)
+                        data['avg_text_length'] = avg_text_length
                 
                 self.logger.info("Added metadata columns: completeness_pct, avg_text_length")
             
