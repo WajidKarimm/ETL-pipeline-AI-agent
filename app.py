@@ -171,6 +171,194 @@ def main():
         else:
             display_statistics(st.session_state.processed_data)
 
+    # Add AI features section
+    if st.sidebar.checkbox("🤖 AI-Powered Features", value=True):
+        st.header("🤖 AI-Powered ETL Assistant")
+        
+        # Check if we have processed data available
+        if 'processed_data' in st.session_state and st.session_state.processed_data is not None:
+            df = st.session_state.processed_data
+            
+            # Initialize AI agent
+            try:
+                from src.ml.ai_agent import ETLAIAgent
+                ai_agent = ETLAIAgent()
+                
+                # AI Data Quality Analysis
+                st.subheader("🔍 Data Quality Analysis")
+                
+                with st.spinner("Analyzing data quality..."):
+                    quality_issues = ai_agent.detect_data_quality_issues(df)
+                
+                if quality_issues:
+                    st.warning(f"Detected {len(quality_issues)} data quality issues:")
+                    
+                    for i, issue in enumerate(quality_issues):
+                        with st.expander(f"🚨 {issue.issue_type.upper()} - {issue.severity.upper()}"):
+                            st.write(f"**Description:** {issue.description}")
+                            st.write(f"**Affected Columns:** {', '.join(issue.affected_columns)}")
+                            st.write(f"**Suggested Fix:** {issue.suggested_fix}")
+                            
+                            # Auto-apply fixes
+                            if st.button(f"Auto-apply fix for issue {i+1}", key=f"fix_{i}"):
+                                if issue.issue_type == "missing_values":
+                                    # Fill missing values
+                                    for col in issue.affected_columns:
+                                        if col in df.columns:
+                                            df[col] = df[col].fillna(df[col].mode()[0] if df[col].dtype == 'object' else df[col].median())
+                                    st.session_state.processed_data = df
+                                    st.success("Applied missing value fixes!")
+                                    st.rerun()
+                                elif issue.issue_type == "duplicates":
+                                    # Remove duplicates
+                                    df = df.drop_duplicates()
+                                    st.session_state.processed_data = df
+                                    st.success("Removed duplicate rows!")
+                                    st.rerun()
+                else:
+                    st.success("✅ No data quality issues detected!")
+                
+                # AI Transformation Suggestions
+                st.subheader("💡 Smart Suggestions")
+                
+                with st.spinner("Generating suggestions..."):
+                    suggestions = ai_agent.suggest_transformations(df)
+                
+                if suggestions:
+                    st.info(f"Found {len(suggestions)} optimization opportunities:")
+                    
+                    for i, suggestion in enumerate(suggestions):
+                        with st.expander(f"💡 {suggestion.transformation_type}"):
+                            st.write(f"**Target Column:** {suggestion.target_column}")
+                            st.write(f"**Reasoning:** {suggestion.reasoning}")
+                            
+                            # Auto-apply suggestions
+                            if st.button(f"Apply suggestion {i+1}", key=f"suggest_{i}"):
+                                try:
+                                    if suggestion.transformation_type == "convert_to_numeric":
+                                        df[suggestion.target_column] = pd.to_numeric(df[suggestion.target_column], errors='coerce')
+                                    elif suggestion.transformation_type == "convert_to_datetime":
+                                        df[suggestion.target_column] = pd.to_datetime(df[suggestion.target_column], errors='coerce')
+                                    elif suggestion.transformation_type == "fill_missing":
+                                        if suggestion.parameters.get("method") == "forward_fill":
+                                            df[suggestion.target_column] = df[suggestion.target_column].fillna(method='ffill')
+                                    
+                                    st.session_state.processed_data = df
+                                    st.success(f"Applied {suggestion.transformation_type}!")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Failed to apply transformation: {e}")
+                else:
+                    st.info("No optimization suggestions at this time.")
+                
+                # Error Prediction (silent background check)
+                transform_config = st.session_state.get('transform_config', {})
+                field_map = transform_config.get('field_map', {})
+                data_types = {}
+                remove_nulls = transform_config.get('dropna_how') != 'none'
+                rename_columns = 'rename_map' in transform_config
+                
+                # Silent background error prediction
+                predictions = []
+                
+                # Check for missing columns in field map
+                for old_col, new_col in field_map.items():
+                    if old_col not in df.columns:
+                        predictions.append({
+                            'error_type': 'Missing Column',
+                            'probability': 1.0,
+                            'description': f"Column '{old_col}' not found in data",
+                            'suggestion': f"Check column names or remove mapping for '{old_col}'"
+                        })
+                
+                # Check for type conversion issues
+                for col, target_type in data_types.items():
+                    if col in df.columns and target_type == 'numeric' and df[col].dtype == 'object':
+                        try:
+                            pd.to_numeric(df[col], errors='raise')
+                        except:
+                            predictions.append({
+                                'error_type': 'Type Conversion Error',
+                                'probability': 0.9,
+                                'description': f"Cannot convert column '{col}' to numeric",
+                                'suggestion': f"Clean non-numeric values in column '{col}'"
+                            })
+                
+                if predictions:
+                    st.warning(f"⚠️ Potential issues detected:")
+                    
+                    for i, prediction in enumerate(predictions):
+                        with st.expander(f"⚠️ {prediction['error_type']}"):
+                            st.write(f"**Description:** {prediction['description']}")
+                            st.write(f"**Suggestion:** {prediction['suggestion']}")
+            
+            except ImportError:
+                st.error("AI features not available. Please install required dependencies.")
+            except Exception as e:
+                st.error(f"AI features error: {e}")
+        else:
+            st.info("📊 Upload and process data to enable AI features!")
+
+    # Update the main ETL processing section to include AI learning
+    if st.button("🚀 Run ETL Pipeline with AI Assistance", type="primary"):
+        if uploaded_file is not None:
+            try:
+                # Initialize AI agent for learning (silent background)
+                try:
+                    from src.ml.ai_agent import ETLAIAgent
+                    ai_agent = ETLAIAgent()
+                    ai_enabled = True
+                except:
+                    ai_enabled = False
+                
+                with st.spinner("Running ETL pipeline with AI assistance..."):
+                    # Process data first
+                    process_data(uploaded_file, data_destination, remove_nulls, rename_columns, map_fields, handle_duplicates)
+                    
+                    # Silent background learning
+                    if ai_enabled and 'processed_data' in st.session_state and st.session_state.processed_data is not None:
+                        try:
+                            # Prepare configuration for learning
+                            config = {
+                                'source_type': 'dataframe',
+                                'source_data': st.session_state.processed_data,
+                                'destination_type': data_destination,
+                                'field_map': st.session_state.get('transform_config', {}).get('field_map', {}),
+                                'data_types': {},
+                                'remove_nulls': remove_nulls,
+                                'rename_columns': rename_columns,
+                                'destination_config': {}
+                            }
+                            
+                            # Silent background learning
+                            ai_agent.learn_from_operation(
+                                data=st.session_state.processed_data,
+                                transformations=config,
+                                success=True,
+                                errors=[]
+                            )
+                        except Exception as e:
+                            # Silent error handling - don't show to user
+                            pass
+                    
+            except Exception as e:
+                st.error(f"❌ ETL Pipeline failed: {e}")
+                
+                # Silent background learning from failure
+                if ai_enabled:
+                    try:
+                        ai_agent.learn_from_operation(
+                            data=pd.DataFrame(),
+                            transformations={},
+                            success=False,
+                            errors=[str(e)]
+                        )
+                    except Exception as ai_error:
+                        # Silent error handling
+                        pass
+        else:
+            st.warning("Please upload a file first!")
+
 def process_data(uploaded_file, destination, remove_nulls, rename_columns, map_fields, handle_duplicates):
     """Process the uploaded data through the ETL pipeline."""
     
