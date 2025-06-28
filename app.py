@@ -146,45 +146,65 @@ def main():
         
         # File upload section
         if data_source == "CSV File":
-            uploaded_file = st.file_uploader(
-                "Choose a data file (up to 1GB)",
-                type=['csv', 'txt', 'arff', 'json', 'xml'],
-                help="Upload your data file for processing (supports multiple formats, max 1GB)"
-            )
-            
-            if uploaded_file is not None:
-                # Display file info with better size formatting
-                file_size_mb = uploaded_file.size / (1024 * 1024)
-                if file_size_mb > 1024:
-                    file_size_display = f"{file_size_mb / 1024:.2f} GB"
-                else:
-                    file_size_display = f"{file_size_mb:.2f} MB"
+            try:
+                uploaded_file = st.file_uploader(
+                    "Choose a data file (up to 1GB)",
+                    type=['csv', 'txt', 'arff', 'json', 'xml'],
+                    help="Upload your data file for processing (supports multiple formats, max 1GB)",
+                    key="file_uploader"  # Add unique key to prevent conflicts
+                )
                 
-                file_details = {
-                    "Filename": uploaded_file.name,
-                    "File size": file_size_display,
-                    "File type": uploaded_file.type,
-                    "Rows estimate": f"~{int(file_size_mb * 50000):,}" if file_size_mb > 10 else "Processing..."
-                }
-                st.json(file_details)
-                
-                # Show file preview (only for smaller files)
-                if file_size_mb < 50:  # Only preview files under 50MB
-                    with st.expander("👀 Preview Uploaded File"):
-                        try:
-                            # Try to read first few lines
-                            content = uploaded_file.read().decode('utf-8', errors='ignore')
-                            lines = content.split('\n')[:10]
-                            st.code('\n'.join(lines), language='text')
-                            uploaded_file.seek(0)  # Reset file pointer
-                        except Exception as e:
-                            st.warning(f"Could not preview file: {str(e)}")
-                else:
-                    st.info(f"📁 Large file detected ({file_size_display}). Preview disabled for performance.")
-                
-                # Process the file
-                if st.button("🚀 Process Data", type="primary"):
-                    process_data(uploaded_file, data_destination, null_handling, rename_columns, map_fields, handle_duplicates, organize_data)
+                if uploaded_file is not None:
+                    try:
+                        # Validate file size
+                        file_size_mb = uploaded_file.size / (1024 * 1024)
+                        
+                        if file_size_mb > 1024:
+                            st.error(f"❌ File too large ({file_size_mb:.2f} MB). Maximum size is 1GB.")
+                            return
+                        
+                        if file_size_mb > 0:  # Valid file
+                            if file_size_mb > 1024:
+                                file_size_display = f"{file_size_mb / 1024:.2f} GB"
+                            else:
+                                file_size_display = f"{file_size_mb:.2f} MB"
+                            
+                            file_details = {
+                                "Filename": uploaded_file.name,
+                                "File size": file_size_display,
+                                "File type": uploaded_file.type or "Unknown",
+                                "Rows estimate": f"~{int(file_size_mb * 50000):,}" if file_size_mb > 10 else "Processing..."
+                            }
+                            st.json(file_details)
+                            
+                            # Show file preview (only for smaller files)
+                            if file_size_mb < 50:  # Only preview files under 50MB
+                                with st.expander("👀 Preview Uploaded File"):
+                                    try:
+                                        # Try to read first few lines
+                                        content = uploaded_file.read().decode('utf-8', errors='ignore')
+                                        lines = content.split('\n')[:10]
+                                        st.code('\n'.join(lines), language='text')
+                                        uploaded_file.seek(0)  # Reset file pointer
+                                    except Exception as e:
+                                        st.warning(f"Could not preview file: {str(e)}")
+                                        uploaded_file.seek(0)  # Reset file pointer
+                            else:
+                                st.info(f"📁 Large file detected ({file_size_display}). Preview disabled for performance.")
+                            
+                            # Process the file
+                            if st.button("🚀 Process Data", type="primary", key="process_button"):
+                                process_data(uploaded_file, data_destination, null_handling, rename_columns, map_fields, handle_duplicates, organize_data)
+                        else:
+                            st.error("❌ Invalid file. Please select a valid data file.")
+                            
+                    except Exception as e:
+                        st.error(f"❌ Error processing file: {str(e)}")
+                        st.info("💡 Try uploading a different file or check the file format.")
+                        
+            except Exception as e:
+                st.error(f"❌ File upload error: {str(e)}")
+                st.info("💡 Please try refreshing the page and uploading again.")
         
         elif data_source == "API Endpoint":
             st.info("API integration coming soon! For now, please use file upload.")
