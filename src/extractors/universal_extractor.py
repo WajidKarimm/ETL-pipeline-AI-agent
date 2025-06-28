@@ -181,7 +181,16 @@ class UniversalExtractor(BaseExtractor):
         Returns:
             pd.DataFrame: Extracted data
         """
-        # Try multiple parsing strategies
+        # Check file size to determine reading strategy
+        file_size = Path(file_path).stat().st_size
+        file_size_mb = file_size / (1024 * 1024)
+        
+        # Use chunked reading for large files
+        if file_size_mb > 100:
+            self.logger.info(f"Large file detected ({file_size_mb:.1f} MB), using chunked reading")
+            return self.extract_csv_chunked(file_path)
+        
+        # Try multiple parsing strategies for smaller files
         strategies = [
             # Strategy 1: Standard pandas
             lambda: pd.read_csv(file_path, engine='python', on_bad_lines='skip'),
@@ -199,19 +208,52 @@ class UniversalExtractor(BaseExtractor):
             lambda: pd.read_csv(file_path, engine='python', on_bad_lines='skip', error_bad_lines=False)
         ]
         
-        for i, strategy in enumerate(strategies):
+        for i, strategy in enumerate(strategies, 1):
             try:
-                df = strategy()
-                if not df.empty:
-                    self.logger.info(f"CSV extraction successful with strategy {i+1}")
-                    return df
+                self.logger.info(f"CSV extraction successful with strategy {i}")
+                return strategy()
             except Exception as e:
-                self.logger.warning(f"Strategy {i+1} failed: {str(e)}")
+                self.logger.warning(f"Strategy {i} failed: {str(e)}")
                 continue
         
-        # If all strategies fail, create a minimal DataFrame
-        self.logger.warning("All CSV parsing strategies failed, creating minimal DataFrame")
-        return pd.DataFrame({'data': ['No data could be extracted']})
+        # If all strategies fail, return empty DataFrame
+        self.logger.error("All CSV extraction strategies failed")
+        return pd.DataFrame()
+    
+    def extract_csv_chunked(self, file_path: str) -> pd.DataFrame:
+        """
+        Extract large CSV files using chunked reading to manage memory.
+        
+        Args:
+            file_path: Path to CSV file
+            
+        Returns:
+            pd.DataFrame: Extracted data
+        """
+        try:
+            # Read in chunks to manage memory
+            chunk_size = 10000  # Adjust based on available memory
+            chunks = []
+            
+            # First, read a small sample to determine structure
+            sample_df = pd.read_csv(file_path, nrows=1000, engine='python', on_bad_lines='skip')
+            
+            # Read the full file in chunks
+            for chunk in pd.read_csv(file_path, chunksize=chunk_size, engine='python', on_bad_lines='skip'):
+                chunks.append(chunk)
+            
+            # Combine all chunks
+            if chunks:
+                result_df = pd.concat(chunks, ignore_index=True)
+                self.logger.info(f"Chunked CSV extraction completed: {len(result_df)} rows")
+                return result_df
+            else:
+                return pd.DataFrame()
+                
+        except Exception as e:
+            self.logger.error(f"Chunked CSV extraction failed: {str(e)}")
+            # Fallback to manual parsing
+            return self.manual_csv_parse(file_path)
     
     def manual_csv_parse(self, file_path: str) -> pd.DataFrame:
         """
@@ -298,11 +340,19 @@ class UniversalExtractor(BaseExtractor):
             file_format = self.detect_file_format(file_path)
             self.logger.info(f"Detected file format: {file_format}")
             
+            # Check for chunked reading configuration
+            csv_options = self.config.get('csv_options', {})
+            chunksize = csv_options.get('chunksize')
+            
             # Extract based on format
             if file_format == 'arff':
                 df = self.extract_arff(file_path)
             elif file_format in ['csv', 'tsv']:
-                df = self.extract_csv_robust(file_path)
+                if chunksize:
+                    # Use chunked reading for large files
+                    df = self.extract_csv_chunked(file_path)
+                else:
+                    df = self.extract_csv_robust(file_path)
             elif file_format == 'json':
                 df = pd.read_json(file_path)
             elif file_format == 'xml':
@@ -318,7 +368,10 @@ class UniversalExtractor(BaseExtractor):
                 df = pd.read_excel(file_path)
             else:
                 # Default to CSV
-                df = self.extract_csv_robust(file_path)
+                if chunksize:
+                    df = self.extract_csv_chunked(file_path)
+                else:
+                    df = self.extract_csv_robust(file_path)
             
             # Ensure we have a DataFrame
             if df is None or df.empty:

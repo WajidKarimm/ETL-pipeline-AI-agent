@@ -137,30 +137,40 @@ def main():
         # File upload section
         if data_source == "CSV File":
             uploaded_file = st.file_uploader(
-                "Choose a data file",
+                "Choose a data file (up to 1GB)",
                 type=['csv', 'txt', 'arff', 'json', 'xml'],
-                help="Upload your data file for processing (supports multiple formats)"
+                help="Upload your data file for processing (supports multiple formats, max 1GB)"
             )
             
             if uploaded_file is not None:
-                # Display file info
+                # Display file info with better size formatting
+                file_size_mb = uploaded_file.size / (1024 * 1024)
+                if file_size_mb > 1024:
+                    file_size_display = f"{file_size_mb / 1024:.2f} GB"
+                else:
+                    file_size_display = f"{file_size_mb:.2f} MB"
+                
                 file_details = {
                     "Filename": uploaded_file.name,
-                    "File size": f"{uploaded_file.size / 1024:.2f} KB",
-                    "File type": uploaded_file.type
+                    "File size": file_size_display,
+                    "File type": uploaded_file.type,
+                    "Rows estimate": f"~{int(file_size_mb * 50000):,}" if file_size_mb > 10 else "Processing..."
                 }
                 st.json(file_details)
                 
-                # Show file preview
-                with st.expander("👀 Preview Uploaded File"):
-                    try:
-                        # Try to read first few lines
-                        content = uploaded_file.read().decode('utf-8', errors='ignore')
-                        lines = content.split('\n')[:10]
-                        st.code('\n'.join(lines), language='text')
-                        uploaded_file.seek(0)  # Reset file pointer
-                    except Exception as e:
-                        st.warning(f"Could not preview file: {str(e)}")
+                # Show file preview (only for smaller files)
+                if file_size_mb < 50:  # Only preview files under 50MB
+                    with st.expander("👀 Preview Uploaded File"):
+                        try:
+                            # Try to read first few lines
+                            content = uploaded_file.read().decode('utf-8', errors='ignore')
+                            lines = content.split('\n')[:10]
+                            st.code('\n'.join(lines), language='text')
+                            uploaded_file.seek(0)  # Reset file pointer
+                        except Exception as e:
+                            st.warning(f"Could not preview file: {str(e)}")
+                else:
+                    st.info(f"📁 Large file detected ({file_size_display}). Preview disabled for performance.")
                 
                 # Process the file
                 if st.button("🚀 Process Data", type="primary"):
@@ -377,6 +387,11 @@ def process_data(uploaded_file, destination, null_handling, rename_columns, map_
         progress_bar = st.progress(0)
         status_text = st.empty()
         
+        # Check file size and warn for very large files
+        file_size_mb = uploaded_file.size / (1024 * 1024)
+        if file_size_mb > 500:
+            st.warning(f"⚠️ Large file detected ({file_size_mb:.1f} MB). Processing may take several minutes.")
+        
         # Step 1: Extract
         status_text.text("📥 Extracting data...")
         progress_bar.progress(10)
@@ -391,7 +406,8 @@ def process_data(uploaded_file, destination, null_handling, rename_columns, map_
             extractor_config = {
                 'csv_options': {
                     'encoding': 'utf-8',
-                    'on_bad_lines': 'skip'
+                    'on_bad_lines': 'skip',
+                    'chunksize': 10000 if file_size_mb > 100 else None  # Use chunks for large files
                 }
             }
             extractor = UniversalExtractor(extractor_config)
@@ -444,8 +460,8 @@ def process_data(uploaded_file, destination, null_handling, rename_columns, map_
                     rename_map[col] = new_name
             transform_config['rename_map'] = rename_map
         
-        # Add field mapping if requested
-        if map_fields:
+        # Add field mapping if requested (only for smaller datasets to avoid memory issues)
+        if map_fields and len(raw_data) < 100000:  # Only map for datasets under 100k rows
             # Create a simple mapping for categorical columns
             field_map = {}
             for col in raw_data.select_dtypes(include=['object']).columns:
@@ -454,6 +470,8 @@ def process_data(uploaded_file, destination, null_handling, rename_columns, map_
                     mapping = {val: idx for idx, val in enumerate(unique_values)}
                     field_map[col] = mapping
             transform_config['field_map'] = field_map
+        elif map_fields:
+            st.info("⚠️ Field mapping skipped for large dataset to improve performance.")
         
         # Apply transformations with error handling
         try:
@@ -566,9 +584,21 @@ def display_results(raw_data, transformed_data, destination):
     
     # Validate data before download
     if transformed_data is not None and not transformed_data.empty:
+        # Check file size and provide appropriate download options
+        estimated_size_mb = len(transformed_data) * len(transformed_data.columns) * 0.1  # Rough estimate
+        
+        if estimated_size_mb > 100:
+            st.warning(f"⚠️ Large dataset detected (~{estimated_size_mb:.1f} MB estimated). Download may take time.")
+        
         # Always provide download options regardless of destination
         try:
-            csv = transformed_data.to_csv(index=False)
+            # CSV download with progress for large files
+            if estimated_size_mb > 50:
+                with st.spinner("Preparing CSV download..."):
+                    csv = transformed_data.to_csv(index=False)
+            else:
+                csv = transformed_data.to_csv(index=False)
+                
             st.download_button(
                 label="📥 Download Transformed CSV",
                 data=csv,
@@ -576,22 +606,28 @@ def display_results(raw_data, transformed_data, destination):
                 mime="text/csv"
             )
             
-            # Also provide JSON download option
-            json_data = transformed_data.to_json(orient='records', indent=2)
-            st.download_button(
-                label="📥 Download Transformed JSON",
-                data=json_data,
-                file_name=f"transformed_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                mime="application/json"
-            )
+            # JSON download (only for smaller files to avoid memory issues)
+            if estimated_size_mb < 50:
+                json_data = transformed_data.to_json(orient='records', indent=2)
+                st.download_button(
+                    label="📥 Download Transformed JSON",
+                    data=json_data,
+                    file_name=f"transformed_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    mime="application/json"
+                )
+            else:
+                st.info("📄 JSON download disabled for large files to improve performance.")
             
             # Show data summary before download
-            st.success(f"📊 **Download Ready:** {len(transformed_data)} rows, {len(transformed_data.columns)} columns")
+            st.success(f"📊 **Download Ready:** {len(transformed_data):,} rows, {len(transformed_data.columns)} columns")
             
-            # Show sample of data being downloaded
-            with st.expander("👀 Preview Data to Download"):
-                st.write("**First 5 rows of data to be downloaded:**")
-                st.dataframe(transformed_data.head(), use_container_width=True)
+            # Show sample of data being downloaded (only for smaller datasets)
+            if len(transformed_data) < 10000:
+                with st.expander("👀 Preview Data to Download"):
+                    st.write("**First 5 rows of data to be downloaded:**")
+                    st.dataframe(transformed_data.head(), use_container_width=True)
+            else:
+                st.info("📋 Preview disabled for large datasets. Use download to view full data.")
                 
         except Exception as e:
             st.error(f"❌ Error preparing download: {str(e)}")
