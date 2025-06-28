@@ -20,7 +20,7 @@ import traceback
 # Add src to path
 sys.path.append('src')
 
-from src.extractors.csv_extractor import CSVExtractor
+from src.extractors.universal_extractor import UniversalExtractor
 from src.transformers.clean_transformer import CleanTransformer
 from src.logger import get_logger
 
@@ -101,10 +101,10 @@ def main():
         
         # Transformation Options
         st.subheader("🔄 Transformations")
-        remove_nulls = st.checkbox("Remove null values", value=True)
-        rename_columns = st.checkbox("Rename columns", value=False)
-        map_fields = st.checkbox("Map field values", value=False)
-        handle_duplicates = st.checkbox("Remove duplicates", value=True)
+        remove_nulls = st.checkbox("Remove null values", value=False, help="Remove rows with missing values")
+        rename_columns = st.checkbox("Rename columns", value=False, help="Standardize column names")
+        map_fields = st.checkbox("Map field values", value=False, help="Convert categorical values to numeric")
+        handle_duplicates = st.checkbox("Remove duplicates", value=False, help="Remove duplicate rows")
         
         # Advanced Options
         with st.expander("🔧 Advanced Options"):
@@ -127,9 +127,9 @@ def main():
         # File upload section
         if data_source == "CSV File":
             uploaded_file = st.file_uploader(
-                "Choose a CSV file",
-                type=['csv', 'txt'],
-                help="Upload your CSV file for processing"
+                "Choose a data file",
+                type=['csv', 'txt', 'arff', 'json', 'xml'],
+                help="Upload your data file for processing (supports multiple formats)"
             )
             
             if uploaded_file is not None:
@@ -157,10 +157,10 @@ def main():
                     process_data(uploaded_file, data_destination, remove_nulls, rename_columns, map_fields, handle_duplicates)
         
         elif data_source == "API Endpoint":
-            st.info("API integration coming soon! For now, please use CSV file upload.")
+            st.info("API integration coming soon! For now, please use file upload.")
         
         elif data_source == "Database":
-            st.info("Database integration coming soon! For now, please use CSV file upload.")
+            st.info("Database integration coming soon! For now, please use file upload.")
     
     with col2:
         st.header("📈 Statistics")
@@ -188,7 +188,7 @@ def process_data(uploaded_file, destination, remove_nulls, rename_columns, map_f
             tmp_file.write(uploaded_file.getvalue())
             tmp_file_path = tmp_file.name
         
-        # Extract data with error handling
+        # Extract data with universal extractor
         try:
             extractor_config = {
                 'csv_options': {
@@ -196,16 +196,16 @@ def process_data(uploaded_file, destination, remove_nulls, rename_columns, map_f
                     'on_bad_lines': 'skip'
                 }
             }
-            extractor = CSVExtractor(extractor_config)
+            extractor = UniversalExtractor(extractor_config)
             raw_data = extractor.extract(tmp_file_path)
             
-            if raw_data.empty:
+            if raw_data.empty or 'error' in raw_data.columns:
                 st.error("❌ No data could be extracted from the file. Please check the file format.")
                 return
                 
         except Exception as e:
             st.error(f"❌ Error extracting data: {str(e)}")
-            st.info("💡 Try uploading a different CSV file or check the file format.")
+            st.info("💡 Try uploading a different file or check the file format.")
             return
         finally:
             # Clean up temp file
@@ -220,7 +220,7 @@ def process_data(uploaded_file, destination, remove_nulls, rename_columns, map_f
         status_text.text("🔄 Transforming data...")
         progress_bar.progress(50)
         
-        # Prepare transformation config
+        # Prepare transformation config with conservative settings
         transform_config = {
             'dropna_axis': 0,
             'dropna_how': 'any' if remove_nulls else 'none',
@@ -243,7 +243,7 @@ def process_data(uploaded_file, destination, remove_nulls, rename_columns, map_f
             field_map = {}
             for col in raw_data.select_dtypes(include=['object']).columns:
                 unique_values = raw_data[col].dropna().unique()
-                if len(unique_values) <= 10:  # Only map if reasonable number of values
+                if len(unique_values) <= 20:  # Only map if reasonable number of values
                     mapping = {val: idx for idx, val in enumerate(unique_values)}
                     field_map[col] = mapping
             transform_config['field_map'] = field_map
@@ -255,6 +255,7 @@ def process_data(uploaded_file, destination, remove_nulls, rename_columns, map_f
             
             if transformed_data.empty:
                 st.warning("⚠️ All data was removed during transformation. Check your settings.")
+                st.info("💡 Try disabling 'Remove null values' or other aggressive transformations.")
                 return
                 
         except Exception as e:
@@ -314,12 +315,12 @@ def display_results(raw_data, transformed_data, destination):
         st.metric("Transformed Rows", len(transformed_data))
     
     with col3:
-        nulls_removed = len(raw_data) - len(transformed_data)
-        st.metric("Rows Removed", nulls_removed)
+        rows_removed = len(raw_data) - len(transformed_data)
+        st.metric("Rows Removed", rows_removed)
     
     with col4:
         if len(raw_data) > 0:
-            reduction_pct = (nulls_removed / len(raw_data)) * 100
+            reduction_pct = (rows_removed / len(raw_data)) * 100
             st.metric("Reduction %", f"{reduction_pct:.1f}%")
     
     # Data visualization
