@@ -16,6 +16,7 @@ import json
 from datetime import datetime
 import time
 import traceback
+import io
 
 # Add src to path
 sys.path.append('src')
@@ -233,26 +234,27 @@ def main():
             try:
                 from src.ml.ai_agent import ETLAIAgent
                 ai_agent = ETLAIAgent()
-                
+                # Use a sample for large datasets
+                sample_size = 10000
+                if len(df) > 50000:
+                    st.info(f"⚠️ Large dataset detected ({len(df):,} rows). AI analysis is performed on a random sample of {sample_size:,} rows for performance.")
+                    ai_df = df.sample(n=sample_size, random_state=42)
+                else:
+                    ai_df = df
                 # AI Data Quality Analysis
                 st.subheader("🔍 Data Quality Analysis")
-                
                 with st.spinner("Analyzing data quality..."):
-                    quality_issues = ai_agent.detect_data_quality_issues(df)
-                
+                    quality_issues = ai_agent.detect_data_quality_issues(ai_df)
                 if quality_issues:
                     st.warning(f"Detected {len(quality_issues)} data quality issues:")
-                    
                     for i, issue in enumerate(quality_issues):
                         with st.expander(f"🚨 {issue.issue_type.upper()} - {issue.severity.upper()}"):
                             st.write(f"**Description:** {issue.description}")
                             st.write(f"**Affected Columns:** {', '.join(issue.affected_columns)}")
                             st.write(f"**Suggested Fix:** {issue.suggested_fix}")
-                            
                             # Auto-apply fixes
                             if st.button(f"Auto-apply fix for issue {i+1}", key=f"fix_{i}"):
                                 if issue.issue_type == "missing_values":
-                                    # Fill missing values
                                     for col in issue.affected_columns:
                                         if col in df.columns:
                                             df[col] = df[col].fillna(df[col].mode()[0] if df[col].dtype == 'object' else df[col].median())
@@ -260,29 +262,22 @@ def main():
                                     st.success("Applied missing value fixes!")
                                     st.rerun()
                                 elif issue.issue_type == "duplicates":
-                                    # Remove duplicates
                                     df = df.drop_duplicates()
                                     st.session_state.processed_data = df
                                     st.success("Removed duplicate rows!")
                                     st.rerun()
                 else:
                     st.success("✅ No data quality issues detected!")
-                
                 # AI Transformation Suggestions
                 st.subheader("💡 Smart Suggestions")
-                
                 with st.spinner("Generating suggestions..."):
-                    suggestions = ai_agent.suggest_transformations(df)
-                
+                    suggestions = ai_agent.suggest_transformations(ai_df)
                 if suggestions:
                     st.info(f"Found {len(suggestions)} optimization opportunities:")
-                    
                     for i, suggestion in enumerate(suggestions):
                         with st.expander(f"💡 {suggestion.transformation_type}"):
                             st.write(f"**Target Column:** {suggestion.target_column}")
                             st.write(f"**Reasoning:** {suggestion.reasoning}")
-                            
-                            # Auto-apply suggestions
                             if st.button(f"Apply suggestion {i+1}", key=f"suggest_{i}"):
                                 try:
                                     if suggestion.transformation_type == "convert_to_numeric":
@@ -292,7 +287,6 @@ def main():
                                     elif suggestion.transformation_type == "fill_missing":
                                         if suggestion.parameters.get("method") == "forward_fill":
                                             df[suggestion.target_column] = df[suggestion.target_column].fillna(method='ffill')
-                                    
                                     st.session_state.processed_data = df
                                     st.success(f"Applied {suggestion.transformation_type}!")
                                     st.rerun()
@@ -300,18 +294,13 @@ def main():
                                     st.error(f"Failed to apply transformation: {e}")
                 else:
                     st.info("No optimization suggestions at this time.")
-                
                 # Error Prediction (silent background check)
                 transform_config = st.session_state.get('transform_config', {})
                 field_map = transform_config.get('field_map', {})
                 data_types = {}
                 remove_nulls = transform_config.get('dropna_how') != 'none'
                 rename_columns = 'rename_map' in transform_config
-                
-                # Silent background error prediction
                 predictions = []
-                
-                # Check for missing columns in field map
                 for old_col, new_col in field_map.items():
                     if old_col not in df.columns:
                         predictions.append({
@@ -320,8 +309,6 @@ def main():
                             'description': f"Column '{old_col}' not found in data",
                             'suggestion': f"Check column names or remove mapping for '{old_col}'"
                         })
-                
-                # Check for type conversion issues
                 for col, target_type in data_types.items():
                     if col in df.columns and target_type == 'numeric' and df[col].dtype == 'object':
                         try:
@@ -333,15 +320,12 @@ def main():
                                 'description': f"Cannot convert column '{col}' to numeric",
                                 'suggestion': f"Clean non-numeric values in column '{col}'"
                             })
-                
                 if predictions:
                     st.warning(f"⚠️ Potential issues detected:")
-                    
                     for i, prediction in enumerate(predictions):
                         with st.expander(f"⚠️ {prediction['error_type']}"):
                             st.write(f"**Description:** {prediction['description']}")
                             st.write(f"**Suggestion:** {prediction['suggestion']}")
-            
             except ImportError:
                 st.error("AI features not available. Please install required dependencies.")
             except Exception as e:
@@ -654,11 +638,15 @@ def display_results(raw_data, transformed_data, destination):
             if len(numeric_cols) > 1:
                 st.subheader("🔗 Correlation Matrix")
                 try:
-                    corr_matrix = transformed_data[numeric_cols].corr()
-                    # Convert to regular Python types for JSON serialization
-                    corr_dict = {str(col1): {str(col2): float(val) for col2, val in row.items()} 
-                               for col1, row in corr_matrix.items()}
-                    fig = px.imshow(corr_matrix, title="Correlation Matrix")
+                    # Use a sample for large datasets to avoid memory errors
+                    sample_size = 10000
+                    if len(transformed_data) > 50000:
+                        st.info(f"⚠️ Large dataset detected ({len(transformed_data):,} rows). Correlation matrix is computed on a random sample of {sample_size:,} rows for performance.")
+                        corr_sample = transformed_data[numeric_cols].sample(n=sample_size, random_state=42) if len(transformed_data) > sample_size else transformed_data[numeric_cols]
+                    else:
+                        corr_sample = transformed_data[numeric_cols]
+                    corr_matrix = corr_sample.corr()
+                    fig = px.imshow(corr_matrix, title="Correlation Matrix (Sampled)" if len(transformed_data) > 50000 else "Correlation Matrix")
                     st.plotly_chart(fig, use_container_width=True)
                 except Exception as e:
                     st.warning(f"Could not display correlation matrix: {str(e)}")
@@ -682,17 +670,28 @@ def display_results(raw_data, transformed_data, destination):
             # CSV download with progress for large files
             if estimated_size_mb > 50:
                 with st.spinner("Preparing CSV download..."):
-                    csv = transformed_data.to_csv(index=False)
+                    try:
+                        if len(transformed_data) > 100000:
+                            # Write CSV in chunks to avoid memory errors
+                            chunk_size = 50000
+                            csv_buffer = io.StringIO()
+                            for start in range(0, len(transformed_data), chunk_size):
+                                transformed_data.iloc[start:start+chunk_size].to_csv(csv_buffer, index=False, header=(start==0), mode='a')
+                            csv = csv_buffer.getvalue()
+                        else:
+                            csv = transformed_data.to_csv(index=False)
+                    except Exception as e:
+                        st.error(f"❌ Error preparing full CSV download: {str(e)}")
+                        st.info("⚠️ Downloading a sample of 10,000 rows instead.")
+                        csv = transformed_data.sample(n=10000, random_state=42).to_csv(index=False)
             else:
                 csv = transformed_data.to_csv(index=False)
-                
             st.download_button(
                 label="📥 Download Transformed CSV",
                 data=csv,
                 file_name=f"transformed_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                 mime="text/csv"
             )
-            
             # JSON download (only for smaller files to avoid memory issues)
             if estimated_size_mb < 50:
                 json_data = transformed_data.to_json(orient='records', indent=2)
@@ -704,10 +703,8 @@ def display_results(raw_data, transformed_data, destination):
                 )
             else:
                 st.info("📄 JSON download disabled for large files to improve performance.")
-            
             # Show data summary before download
             st.success(f"📊 **Download Ready:** {len(transformed_data):,} rows, {len(transformed_data.columns)} columns")
-            
             # Show sample of data being downloaded (only for smaller datasets)
             if len(transformed_data) < 10000:
                 with st.expander("👀 Preview Data to Download"):
@@ -715,7 +712,6 @@ def display_results(raw_data, transformed_data, destination):
                     st.dataframe(transformed_data.head(), use_container_width=True)
             else:
                 st.info("📋 Preview disabled for large datasets. Use download to view full data.")
-                
         except Exception as e:
             st.error(f"❌ Error preparing download: {str(e)}")
             st.info("💡 Try processing the data again or check the transformation settings.")
@@ -738,23 +734,30 @@ def display_statistics(data):
     # Data types
     st.subheader("📋 Data Types")
     try:
-        # Convert data types to strings to avoid serialization issues
-        dtype_counts = data.dtypes.astype(str).value_counts()
+        sample_size = 10000
+        if len(data) > 50000:
+            st.info(f"⚠️ Large dataset detected ({len(data):,} rows). Data type chart is computed on a random sample of {sample_size:,} rows for performance.")
+            dtype_counts = data.sample(n=sample_size, random_state=42).dtypes.astype(str).value_counts()
+        else:
+            dtype_counts = data.dtypes.astype(str).value_counts()
         fig = px.pie(values=dtype_counts.values, names=dtype_counts.index, title="Data Types Distribution")
         st.plotly_chart(fig, use_container_width=True)
     except Exception as e:
         st.warning(f"Could not display data types chart: {str(e)}")
-        # Show data types as text instead
-        st.write("**Data Types:**")
-        for col, dtype in data.dtypes.items():
-            st.write(f"- {col}: {dtype}")
+    # Always show all data types as text
+    st.write("**Data Types:**")
+    for col, dtype in data.dtypes.items():
+        st.write(f"- {col}: {dtype}")
     
     # Missing values
     st.subheader("❓ Missing Values")
     try:
-        missing_data = data.isnull().sum()
+        if len(data) > 50000:
+            st.info(f"⚠️ Large dataset detected ({len(data):,} rows). Missing value chart is computed on a random sample of {sample_size:,} rows for performance.")
+            missing_data = data.sample(n=sample_size, random_state=42).isnull().sum()
+        else:
+            missing_data = data.isnull().sum()
         if missing_data.sum() > 0:
-            # Convert to regular Python types for JSON serialization
             missing_dict = {str(col): int(val) for col, val in missing_data.items()}
             fig = px.bar(x=list(missing_dict.keys()), y=list(missing_dict.values()), title="Missing Values per Column")
             st.plotly_chart(fig, use_container_width=True)
@@ -762,7 +765,6 @@ def display_statistics(data):
             st.success("✅ No missing values found!")
     except Exception as e:
         st.warning(f"Could not display missing values chart: {str(e)}")
-        # Show missing values as text instead
         missing_data = data.isnull().sum()
         if missing_data.sum() > 0:
             st.write("**Missing Values:**")
