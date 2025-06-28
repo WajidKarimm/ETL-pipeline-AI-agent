@@ -1,8 +1,37 @@
 # 🤖 AI-Powered ETL Pipeline
 
+[![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![Streamlit](https://img.shields.io/badge/Streamlit-1.28+-red.svg)](https://streamlit.io/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Status](https://img.shields.io/badge/Status-Production%20Ready-brightgreen.svg)](https://github.com/WajidKarimm/ETL-pipeline-AI-agent)
+[![AI](https://img.shields.io/badge/AI-Powered-orange.svg)](https://github.com/WajidKarimm/ETL-pipeline-AI-agent)
+
 A **production-ready** ETL (Extract, Transform, Load) pipeline with **AI-powered intelligence** for automated data quality detection, intelligent transformation suggestions, and error prediction. Built with Python, featuring a modern web interface and comprehensive machine learning capabilities.
 
 **🚀 Now supports files up to 1GB with optimized memory management and production-ready reliability!**
+
+## 📋 Table of Contents
+
+- [🎯 What You're Looking For](#-what-youre-looking-for)
+- [✨ Key Features](#-key-features)
+- [📁 Project Structure](#-project-structure)
+- [🚀 Quick Start](#-quick-start)
+- [🧠 AI Training Guide](#-ai-training-guide)
+- [📊 AI Capabilities Demo](#-ai-capabilities-demo)
+- [🏗️ Architecture](#️-architecture)
+- [📈 AI Performance Metrics](#-ai-performance-metrics)
+- [🔧 Recent Improvements](#-recent-improvements)
+- [📁 Large File Handling](#-large-file-handling)
+- [🚀 Optimized Field Mapping](#-optimized-field-mapping)
+- [🔧 Configuration](#-configuration)
+- [📚 Documentation](#-documentation)
+- [🧪 Testing](#-testing)
+- [🤝 Contributing](#-contributing)
+- [📊 Performance Benchmarks](#-performance-benchmarks)
+- [🎯 Use Cases](#-use-cases)
+- [🔮 Roadmap](#-roadmap)
+- [📄 License](#-license)
+- [🙏 Acknowledgments](#-acknowledgments)
 
 ## 🎯 What You're Looking For
 
@@ -515,3 +544,16 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 **Ready to transform your data with AI?** 🚀
 
 Start with the [Quick Start](#-quick-start) guide and experience the power of AI-driven ETL processing with production-ready reliability!
+
+---
+
+<div align="center">
+
+**⭐ Star this repository if you find it helpful!**
+
+[![GitHub stars](https://img.shields.io/github/stars/WajidKarimm/ETL-pipeline-AI-agent?style=social)](https://github.com/WajidKarimm/ETL-pipeline-AI-agent/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/WajidKarimm/ETL-pipeline-AI-agent?style=social)](https://github.com/WajidKarimm/ETL-pipeline-AI-agent/network)
+[![GitHub issues](https://img.shields.io/github/issues/WajidKarimm/ETL-pipeline-AI-agent)](https://github.com/WajidKarimm/ETL-pipeline-AI-agent/issues)
+[![GitHub pull requests](https://img.shields.io/github/issues-pr/WajidKarimm/ETL-pipeline-AI-agent)](https://github.com/WajidKarimm/ETL-pipeline-AI-agent/pulls)
+
+</div>
