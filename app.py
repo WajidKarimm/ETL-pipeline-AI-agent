@@ -100,8 +100,18 @@ def main():
         )
         
         # Transformation Options
-        st.subheader("🔄 Transformations")
-        remove_nulls = st.checkbox("Remove null values", value=False, help="Remove rows with missing values")
+        st.subheader("�� Transformations")
+        
+        # More granular null handling
+        null_handling = st.selectbox(
+            "Handle missing values",
+            ["Keep all data", "Remove completely empty rows", "Remove rows with >50% nulls", "Remove any row with nulls"],
+            help="Choose how to handle missing values in your data"
+        )
+        
+        # Convert selection to boolean for backward compatibility
+        remove_nulls = null_handling != "Keep all data"
+        
         rename_columns = st.checkbox("Rename columns", value=False, help="Standardize column names")
         map_fields = st.checkbox("Map field values", value=False, help="Convert categorical values to numeric")
         handle_duplicates = st.checkbox("Remove duplicates", value=False, help="Remove duplicate rows")
@@ -154,7 +164,7 @@ def main():
                 
                 # Process the file
                 if st.button("🚀 Process Data", type="primary"):
-                    process_data(uploaded_file, data_destination, remove_nulls, rename_columns, map_fields, handle_duplicates)
+                    process_data(uploaded_file, data_destination, null_handling, rename_columns, map_fields, handle_duplicates)
         
         elif data_source == "API Endpoint":
             st.info("API integration coming soon! For now, please use file upload.")
@@ -313,7 +323,7 @@ def main():
                 
                 with st.spinner("Running ETL pipeline with AI assistance..."):
                     # Process data first
-                    process_data(uploaded_file, data_destination, remove_nulls, rename_columns, map_fields, handle_duplicates)
+                    process_data(uploaded_file, data_destination, null_handling, rename_columns, map_fields, handle_duplicates)
                     
                     # Silent background learning
                     if ai_enabled and 'processed_data' in st.session_state and st.session_state.processed_data is not None:
@@ -325,7 +335,7 @@ def main():
                                 'destination_type': data_destination,
                                 'field_map': st.session_state.get('transform_config', {}).get('field_map', {}),
                                 'data_types': {},
-                                'remove_nulls': remove_nulls,
+                                'remove_nulls': null_handling != "Keep all data",
                                 'rename_columns': rename_columns,
                                 'destination_config': {}
                             }
@@ -359,7 +369,7 @@ def main():
         else:
             st.warning("Please upload a file first!")
 
-def process_data(uploaded_file, destination, remove_nulls, rename_columns, map_fields, handle_duplicates):
+def process_data(uploaded_file, destination, null_handling, rename_columns, map_fields, handle_duplicates):
     """Process the uploaded data through the ETL pipeline."""
     
     try:
@@ -411,9 +421,18 @@ def process_data(uploaded_file, destination, remove_nulls, rename_columns, map_f
         # Prepare transformation config with conservative settings
         transform_config = {
             'dropna_axis': 0,
-            'dropna_how': 'any' if remove_nulls else 'none',
             'handle_duplicates': handle_duplicates
         }
+        
+        # Handle null removal based on user selection
+        if null_handling == "Keep all data":
+            transform_config['dropna_how'] = 'none'
+        elif null_handling == "Remove completely empty rows":
+            transform_config['dropna_how'] = 'all'
+        elif null_handling == "Remove rows with >50% nulls":
+            transform_config['dropna_how'] = 'any'  # Will be handled conservatively in transformer
+        elif null_handling == "Remove any row with nulls":
+            transform_config['dropna_how'] = 'any'  # Will be handled conservatively in transformer
         
         # Add column renaming if requested
         if rename_columns:
@@ -443,7 +462,7 @@ def process_data(uploaded_file, destination, remove_nulls, rename_columns, map_f
             
             if transformed_data.empty:
                 st.warning("⚠️ All data was removed during transformation. Check your settings.")
-                st.info("💡 Try disabling 'Remove null values' or other aggressive transformations.")
+                st.info("💡 Try selecting 'Keep all data' or other less aggressive transformations.")
                 return
                 
         except Exception as e:
@@ -545,14 +564,40 @@ def display_results(raw_data, transformed_data, destination):
     # Download options
     st.subheader("💾 Download Results")
     
-    if destination == "CSV Export":
-        csv = transformed_data.to_csv(index=False)
-        st.download_button(
-            label="📥 Download Transformed CSV",
-            data=csv,
-            file_name=f"transformed_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv"
-        )
+    # Validate data before download
+    if transformed_data is not None and not transformed_data.empty:
+        # Always provide download options regardless of destination
+        try:
+            csv = transformed_data.to_csv(index=False)
+            st.download_button(
+                label="📥 Download Transformed CSV",
+                data=csv,
+                file_name=f"transformed_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
+            
+            # Also provide JSON download option
+            json_data = transformed_data.to_json(orient='records', indent=2)
+            st.download_button(
+                label="📥 Download Transformed JSON",
+                data=json_data,
+                file_name=f"transformed_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                mime="application/json"
+            )
+            
+            # Show data summary before download
+            st.success(f"📊 **Download Ready:** {len(transformed_data)} rows, {len(transformed_data.columns)} columns")
+            
+            # Show sample of data being downloaded
+            with st.expander("👀 Preview Data to Download"):
+                st.write("**First 5 rows of data to be downloaded:**")
+                st.dataframe(transformed_data.head(), use_container_width=True)
+                
+        except Exception as e:
+            st.error(f"❌ Error preparing download: {str(e)}")
+            st.info("💡 Try processing the data again or check the transformation settings.")
+    else:
+        st.error("❌ No data available for download. Please process your data first.")
     
     # Show transformation details
     with st.expander("🔍 View Transformation Details"):

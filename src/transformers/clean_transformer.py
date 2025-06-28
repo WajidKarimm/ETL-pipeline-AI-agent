@@ -87,7 +87,7 @@ class CleanTransformer(BaseTransformer):
 
     def handle_missing_values(self, data: pd.DataFrame) -> pd.DataFrame:
         """
-        Handle missing values based on configuration.
+        Handle missing values based on configuration with conservative approach.
         
         Args:
             data: Input DataFrame
@@ -98,12 +98,21 @@ class CleanTransformer(BaseTransformer):
         original_rows = len(data)
         
         if self.dropna_how != 'none':
-            data = data.dropna(axis=self.dropna_axis, how=self.dropna_how)
+            # More conservative approach: only remove rows that are mostly empty
+            if self.dropna_how == 'any':
+                # Instead of removing any row with a null, only remove rows that are completely empty
+                # or have more than 50% null values
+                null_percentage = data.isnull().sum(axis=1) / len(data.columns)
+                data = data[null_percentage <= 0.5]  # Keep rows with <= 50% nulls
+            else:
+                # Use the original dropna logic for other cases
+                data = data.dropna(axis=self.dropna_axis, how=self.dropna_how)
             
             rows_removed = original_rows - len(data)
-            self.logger.info("Missing values handled", 
+            self.logger.info("Missing values handled conservatively", 
                            rows_removed=rows_removed,
-                           remaining_rows=len(data))
+                           remaining_rows=len(data),
+                           removal_strategy="conservative (<=50% nulls)")
         
         return data
 
