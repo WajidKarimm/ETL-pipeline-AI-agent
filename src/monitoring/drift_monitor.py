@@ -143,19 +143,8 @@ class DriftMonitor:
         logger.info(f"Baseline set for {dataset_name} with {len(data)} samples")
         return baseline
     
-    def detect_data_drift(self, data: pd.DataFrame, dataset_name: str, 
-                         baseline_name: Optional[str] = None) -> DriftReport:
-        """
-        Detect data drift by comparing current data with baseline.
-        
-        Args:
-            data: Current dataset
-            dataset_name: Name of the dataset
-            baseline_name: Name of baseline to compare against (defaults to dataset_name)
-            
-        Returns:
-            DriftReport with drift detection results
-        """
+    def detect_data_drift(self, data: pd.DataFrame, dataset_name: str, baseline_name: Optional[str] = None) -> DriftReport:
+        """Detect data drift by comparing current data with baseline."""
         baseline_name = baseline_name or dataset_name
         
         if baseline_name not in self.baselines:
@@ -166,53 +155,53 @@ class DriftMonitor:
         
         metrics = []
         drifted_features = 0
-        
-        # Get numeric columns for drift detection
         numeric_cols = data.select_dtypes(include=[np.number]).columns
         
         for col in numeric_cols:
             if col in baseline.feature_distributions:
-                # Kolmogorov-Smirnov test for distribution drift
-                ks_stat, ks_pvalue = stats.ks_2samp(
-                    baseline.feature_distributions[col]['values'],
-                    data[col].dropna()
-                )
-                
-                # Population Stability Index
-                psi = self._calculate_psi(
-                    baseline.feature_distributions[col]['histogram'],
-                    data[col].dropna()
-                )
-                
-                # Determine if drifted
-                is_drifted = (ks_pvalue < self.drift_thresholds['ks_test'] or 
-                             psi > self.drift_thresholds['psi_threshold'])
-                
-                if is_drifted:
-                    drifted_features += 1
-                
-                metric = DriftMetric(
-                    metric_name=f"drift_{col}",
-                    value=min(ks_pvalue, psi),
-                    threshold=self.drift_thresholds['ks_test'],
-                    is_drifted=is_drifted,
-                    confidence=1 - min(ks_pvalue, psi),
-                    details={
-                        'ks_statistic': ks_stat,
-                        'ks_pvalue': ks_pvalue,
-                        'psi': psi,
-                        'feature': col
-                    }
-                )
-                metrics.append(metric)
+                try:
+                    # Convert baseline values back to numpy array
+                    baseline_values = np.array(baseline.feature_distributions[col]['values'])
+                    current_values = data[col].dropna()
+                    
+                    if len(current_values) > 0 and len(baseline_values) > 0:
+                        # Kolmogorov-Smirnov test for distribution drift
+                        ks_stat, ks_pvalue = stats.ks_2samp(baseline_values, current_values)
+                        
+                        # Population Stability Index
+                        psi = self._calculate_psi(
+                            np.array(baseline.feature_distributions[col]['histogram']),
+                            current_values
+                        )
+                        
+                        # Determine if drifted
+                        is_drifted = (ks_pvalue < self.drift_thresholds['ks_test'] or 
+                                     psi > self.drift_thresholds['psi_threshold'])
+                        
+                        if is_drifted:
+                            drifted_features += 1
+                        
+                        metric = DriftMetric(
+                            metric_name=f"drift_{col}",
+                            value=min(ks_pvalue, psi),
+                            threshold=self.drift_thresholds['ks_test'],
+                            is_drifted=is_drifted,
+                            confidence=1 - min(ks_pvalue, psi),
+                            details={
+                                'ks_statistic': float(ks_stat),
+                                'ks_pvalue': float(ks_pvalue),
+                                'psi': float(psi),
+                                'feature': col
+                            }
+                        )
+                        metrics.append(metric)
+                except Exception as e:
+                    logger.warning(f"Error calculating drift for feature {col}: {e}")
+                    continue
         
-        # Calculate overall drift severity
         drift_severity = self._calculate_drift_severity(metrics)
-        
-        # Generate recommendations
         recommendations = self._generate_drift_recommendations(metrics, drift_severity)
         
-        # Create drift report
         report = DriftReport(
             dataset_name=dataset_name,
             timestamp=datetime.now(),
@@ -229,13 +218,8 @@ class DriftMonitor:
             }
         )
         
-        # Update monitoring metrics
         self._update_monitoring_metrics(report)
-        
-        # Store drift history
         self.drift_history.append(report)
-        
-        # Save report
         self._save_drift_report(report)
         
         logger.info(f"Data drift detection completed: {drifted_features}/{len(numeric_cols)} features drifted")
@@ -244,19 +228,7 @@ class DriftMonitor:
     def detect_concept_drift(self, data: pd.DataFrame, predictions: np.ndarray, 
                            true_labels: np.ndarray, dataset_name: str,
                            baseline_name: Optional[str] = None) -> DriftReport:
-        """
-        Detect concept drift by monitoring model performance changes.
-        
-        Args:
-            data: Current dataset
-            predictions: Model predictions
-            true_labels: True labels
-            dataset_name: Name of the dataset
-            baseline_name: Name of baseline to compare against
-            
-        Returns:
-            DriftReport with concept drift detection results
-        """
+        """Detect concept drift by monitoring model performance changes."""
         baseline_name = baseline_name or dataset_name
         
         if baseline_name not in self.baselines:
@@ -266,48 +238,44 @@ class DriftMonitor:
         logger.info(f"Detecting concept drift for {dataset_name}")
         
         metrics = []
-        
-        # Calculate current performance metrics
         current_performance = {}
         
-        if len(np.unique(true_labels)) > 1:  # Classification task
-            current_performance['accuracy'] = accuracy_score(true_labels, predictions)
-            try:
-                current_performance['auc'] = roc_auc_score(true_labels, predictions)
-            except:
-                current_performance['auc'] = 0.5
+        try:
+            if len(np.unique(true_labels)) > 1:  # Classification task
+                current_performance['accuracy'] = float(accuracy_score(true_labels, predictions))
+                try:
+                    current_performance['auc'] = float(roc_auc_score(true_labels, predictions))
+                except:
+                    current_performance['auc'] = 0.5
+            
+            baseline_performance = baseline.model_performance
+            
+            for metric_name, current_value in current_performance.items():
+                if metric_name in baseline_performance:
+                    baseline_value = baseline_performance[metric_name]
+                    performance_drop = baseline_value - current_value
+                    
+                    is_drifted = performance_drop > self.drift_thresholds['performance_drop']
+                    
+                    metric = DriftMetric(
+                        metric_name=f"performance_{metric_name}",
+                        value=current_value,
+                        threshold=baseline_value * (1 - self.drift_thresholds['performance_drop']),
+                        is_drifted=is_drifted,
+                        confidence=1 - abs(performance_drop),
+                        details={
+                            'baseline_value': baseline_value,
+                            'performance_drop': performance_drop,
+                            'metric': metric_name
+                        }
+                    )
+                    metrics.append(metric)
+        except Exception as e:
+            logger.error(f"Error in concept drift detection: {e}")
         
-        # Compare with baseline performance
-        baseline_performance = baseline.model_performance
-        
-        for metric_name, current_value in current_performance.items():
-            if metric_name in baseline_performance:
-                baseline_value = baseline_performance[metric_name]
-                performance_drop = baseline_value - current_value
-                
-                is_drifted = performance_drop > self.drift_thresholds['performance_drop']
-                
-                metric = DriftMetric(
-                    metric_name=f"performance_{metric_name}",
-                    value=current_value,
-                    threshold=baseline_value * (1 - self.drift_thresholds['performance_drop']),
-                    is_drifted=is_drifted,
-                    confidence=1 - abs(performance_drop),
-                    details={
-                        'baseline_value': baseline_value,
-                        'performance_drop': performance_drop,
-                        'metric': metric_name
-                    }
-                )
-                metrics.append(metric)
-        
-        # Calculate drift severity
         drift_severity = self._calculate_drift_severity(metrics)
-        
-        # Generate recommendations
         recommendations = self._generate_drift_recommendations(metrics, drift_severity)
         
-        # Create drift report
         report = DriftReport(
             dataset_name=dataset_name,
             timestamp=datetime.now(),
@@ -324,13 +292,8 @@ class DriftMonitor:
             }
         )
         
-        # Update monitoring metrics
         self._update_monitoring_metrics(report)
-        
-        # Store drift history
         self.drift_history.append(report)
-        
-        # Save report
         self._save_drift_report(report)
         
         logger.info(f"Concept drift detection completed: {len([m for m in metrics if m.is_drifted])} metrics drifted")
@@ -338,17 +301,7 @@ class DriftMonitor:
     
     def detect_feature_drift(self, data: pd.DataFrame, dataset_name: str,
                            baseline_name: Optional[str] = None) -> DriftReport:
-        """
-        Detect feature-level drift using anomaly detection.
-        
-        Args:
-            data: Current dataset
-            dataset_name: Name of the dataset
-            baseline_name: Name of baseline to compare against
-            
-        Returns:
-            DriftReport with feature drift detection results
-        """
+        """Detect feature-level drift using anomaly detection."""
         baseline_name = baseline_name or dataset_name
         
         if baseline_name not in self.baselines:
@@ -359,52 +312,53 @@ class DriftMonitor:
         
         metrics = []
         drifted_features = 0
-        
-        # Get numeric columns
         numeric_cols = data.select_dtypes(include=[np.number]).columns
         
         for col in numeric_cols:
             if col in baseline.feature_distributions:
-                # Use Isolation Forest for anomaly detection
-                baseline_values = baseline.feature_distributions[col]['values']
-                current_values = data[col].dropna()
-                
-                # Train isolation forest on baseline
-                iso_forest = IsolationForest(contamination=self.drift_thresholds['isolation_forest'], 
-                                           random_state=42)
-                iso_forest.fit(baseline_values.reshape(-1, 1))
-                
-                # Predict anomalies in current data
-                anomaly_scores = iso_forest.decision_function(current_values.reshape(-1, 1))
-                anomaly_ratio = np.mean(anomaly_scores < 0)
-                
-                is_drifted = anomaly_ratio > self.drift_thresholds['isolation_forest']
-                
-                if is_drifted:
-                    drifted_features += 1
-                
-                metric = DriftMetric(
-                    metric_name=f"anomaly_{col}",
-                    value=anomaly_ratio,
-                    threshold=self.drift_thresholds['isolation_forest'],
-                    is_drifted=is_drifted,
-                    confidence=anomaly_ratio,
-                    details={
-                        'anomaly_ratio': anomaly_ratio,
-                        'feature': col,
-                        'baseline_mean': np.mean(baseline_values),
-                        'current_mean': np.mean(current_values)
-                    }
-                )
-                metrics.append(metric)
+                try:
+                    baseline_values = np.array(baseline.feature_distributions[col]['values'])
+                    current_values = data[col].dropna()
+                    
+                    if len(current_values) > 0 and len(baseline_values) > 0:
+                        # Use Isolation Forest for anomaly detection
+                        iso_forest = IsolationForest(
+                            contamination=self.drift_thresholds['isolation_forest'], 
+                            random_state=42
+                        )
+                        iso_forest.fit(baseline_values.reshape(-1, 1))
+                        
+                        # Predict anomalies in current data
+                        current_values_array = current_values.values.reshape(-1, 1)
+                        anomaly_scores = iso_forest.decision_function(current_values_array)
+                        anomaly_ratio = float(np.mean(anomaly_scores < 0))
+                        
+                        is_drifted = anomaly_ratio > self.drift_thresholds['isolation_forest']
+                        
+                        if is_drifted:
+                            drifted_features += 1
+                        
+                        metric = DriftMetric(
+                            metric_name=f"anomaly_{col}",
+                            value=anomaly_ratio,
+                            threshold=self.drift_thresholds['isolation_forest'],
+                            is_drifted=is_drifted,
+                            confidence=anomaly_ratio,
+                            details={
+                                'anomaly_ratio': anomaly_ratio,
+                                'feature': col,
+                                'baseline_mean': float(np.mean(baseline_values)),
+                                'current_mean': float(np.mean(current_values))
+                            }
+                        )
+                        metrics.append(metric)
+                except Exception as e:
+                    logger.warning(f"Error calculating feature drift for {col}: {e}")
+                    continue
         
-        # Calculate drift severity
         drift_severity = self._calculate_drift_severity(metrics)
-        
-        # Generate recommendations
         recommendations = self._generate_drift_recommendations(metrics, drift_severity)
         
-        # Create drift report
         report = DriftReport(
             dataset_name=dataset_name,
             timestamp=datetime.now(),
@@ -421,13 +375,8 @@ class DriftMonitor:
             }
         )
         
-        # Update monitoring metrics
         self._update_monitoring_metrics(report)
-        
-        # Store drift history
         self.drift_history.append(report)
-        
-        # Save report
         self._save_drift_report(report)
         
         logger.info(f"Feature drift detection completed: {drifted_features}/{len(numeric_cols)} features drifted")
@@ -435,23 +384,23 @@ class DriftMonitor:
     
     def _calculate_data_statistics(self, data: pd.DataFrame) -> Dict[str, Any]:
         stats = {
-            'shape': data.shape,
-            'memory_usage_mb': data.memory_usage(deep=True).sum() / 1024 / 1024,
+            'shape': list(data.shape),  # Convert tuple to list
+            'memory_usage_mb': float(data.memory_usage(deep=True).sum() / 1024 / 1024),
             'null_counts': data.isnull().sum().to_dict(),
             'null_percentages': (data.isnull().sum() / len(data) * 100).to_dict(),
-            'data_types': data.dtypes.to_dict(),
+            'data_types': {col: str(dtype) for col, dtype in data.dtypes.to_dict().items()},  # Convert to strings
             'numeric_summary': {}
         }
         numeric_cols = data.select_dtypes(include=[np.number]).columns
         for col in numeric_cols:
             stats['numeric_summary'][col] = {
-                'mean': data[col].mean(),
-                'std': data[col].std(),
-                'min': data[col].min(),
-                'max': data[col].max(),
-                'median': data[col].median(),
-                'skewness': data[col].skew(),
-                'kurtosis': data[col].kurtosis()
+                'mean': float(data[col].mean()),
+                'std': float(data[col].std()),
+                'min': float(data[col].min()),
+                'max': float(data[col].max()),
+                'median': float(data[col].median()),
+                'skewness': float(data[col].skew()),
+                'kurtosis': float(data[col].kurtosis())
             }
         return stats
     
@@ -474,14 +423,10 @@ class DriftMonitor:
     def _calculate_psi(self, baseline_hist: np.ndarray, current_values: pd.Series) -> float:
         """Calculate Population Stability Index."""
         try:
-            # Create histogram for current values using same bins as baseline
             current_hist, _ = np.histogram(current_values, bins=len(baseline_hist))
-            
-            # Normalize histograms
             baseline_norm = baseline_hist / np.sum(baseline_hist)
             current_norm = current_hist / np.sum(current_hist)
             
-            # Calculate PSI
             psi = 0
             for i in range(len(baseline_norm)):
                 if baseline_norm[i] > 0 and current_norm[i] > 0:
@@ -511,7 +456,6 @@ class DriftMonitor:
     def _generate_drift_recommendations(self, metrics: List[DriftMetric], severity: str) -> List[str]:
         """Generate recommendations based on drift detection results."""
         recommendations = []
-        
         drifted_metrics = [m for m in metrics if m.is_drifted]
         
         if severity == 'critical':
@@ -536,7 +480,6 @@ class DriftMonitor:
         if report.drifted_features > 0:
             self.monitoring_metrics['drift_detected'] += 1
         
-        # Update average drift score
         if report.metrics:
             avg_drift_score = np.mean([m.value for m in report.metrics])
             current_avg = self.monitoring_metrics['average_drift_score']
@@ -584,12 +527,14 @@ class DriftMonitor:
                 'metrics': [
                     {
                         'metric_name': m.metric_name,
-                        'value': m.value,
-                        'threshold': m.threshold,
-                        'is_drifted': m.is_drifted,
-                        'confidence': m.confidence,
+                        'value': float(m.value),
+                        'threshold': float(m.threshold),
+                        'is_drifted': bool(m.is_drifted),
+                        'confidence': float(m.confidence),
                         'timestamp': m.timestamp.isoformat(),
-                        'details': m.details
+                        'details': {k: (float(v) if isinstance(v, (np.floating, float)) else 
+                                       bool(v) if isinstance(v, (np.bool_, bool)) else v) 
+                                  for k, v in m.details.items()}
                     }
                     for m in report.metrics
                 ],
@@ -616,21 +561,11 @@ class DriftMonitor:
             with open(baseline_file, 'r') as f:
                 baseline_dict = json.load(f)
             
-            # Reconstruct BaselineData object
             baseline = BaselineData(
                 dataset_name=baseline_dict['dataset_name'],
                 timestamp=datetime.fromisoformat(baseline_dict['timestamp']),
                 data_statistics=baseline_dict['data_statistics'],
-                feature_distributions={
-                    col: {
-                        'mean': dist['mean'],
-                        'std': dist['std'],
-                        'histogram': np.array(dist['histogram']),
-                        'bins': np.array(dist['bins']),
-                        'values': np.array([])  # Will be reconstructed if needed
-                    }
-                    for col, dist in baseline_dict['feature_distributions'].items()
-                },
+                feature_distributions=baseline_dict['feature_distributions'],
                 model_performance=baseline_dict['model_performance'],
                 sample_size=baseline_dict['sample_size']
             )

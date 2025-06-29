@@ -23,6 +23,7 @@ sys.path.append('.')
 from src.ml.ai_agent import ETLAIAgent
 from src.transformers.clean_transformer import CleanTransformer
 from src.validation.data_validator import DataValidator
+from src.monitoring.drift_monitor import DriftMonitor
 
 # Configure logging
 logging.basicConfig(
@@ -137,6 +138,31 @@ class ContinuousLearningPipeline:
                 results['error'] = f"Critical validation failures: {validation_report.critical_failures}. See {validation_report_path}"
                 logger.error(results['error'])
                 return results
+
+            # Drift Monitoring
+            drift_monitor = DriftMonitor()
+            dataset_name = os.path.basename(file_path)
+            
+            # Check if baseline exists, if not create one
+            baseline = drift_monitor.load_baseline(dataset_name)
+            if baseline is None:
+                logger.info(f"Creating baseline for {dataset_name}")
+                baseline = drift_monitor.set_baseline(df, dataset_name)
+                results['baseline_created'] = True
+            else:
+                # Detect drift
+                logger.info(f"Detecting drift for {dataset_name}")
+                data_drift_report = drift_monitor.detect_data_drift(df, dataset_name)
+                feature_drift_report = drift_monitor.detect_feature_drift(df, dataset_name)
+                
+                # Log drift results
+                if data_drift_report.drifted_features > 0:
+                    logger.warning(f"Data drift detected: {data_drift_report.drifted_features} features drifted")
+                if feature_drift_report.drifted_features > 0:
+                    logger.warning(f"Feature drift detected: {feature_drift_report.drifted_features} features drifted")
+                
+                results['drift_detected'] = (data_drift_report.drifted_features > 0 or feature_drift_report.drifted_features > 0)
+                results['drift_severity'] = max(data_drift_report.drift_severity, feature_drift_report.drift_severity)
 
             # AI Agent Analysis
             issues = self.ai_agent.detect_data_quality_issues(df)
