@@ -24,6 +24,7 @@ from src.ml.ai_agent import ETLAIAgent
 from src.transformers.clean_transformer import CleanTransformer
 from src.validation.data_validator import DataValidator
 from src.monitoring.drift_monitor import DriftMonitor
+from src.experiments.experiment_tracker import ExperimentTracker, ExperimentConfig
 
 # Configure logging
 logging.basicConfig(
@@ -164,6 +165,45 @@ class ContinuousLearningPipeline:
                 results['drift_detected'] = (data_drift_report.drifted_features > 0 or feature_drift_report.drifted_features > 0)
                 results['drift_severity'] = max(data_drift_report.drift_severity, feature_drift_report.drift_severity)
 
+            # Experiment Tracking
+            experiment_tracker = ExperimentTracker()
+            
+            # Create experiment for this dataset if it doesn't exist
+            experiment_name = f"etl_pipeline_{dataset_name.replace('.csv', '').replace('.json', '').replace('.xlsx', '')}"
+            experiment_config = ExperimentConfig(
+                experiment_name=experiment_name,
+                description=f"ETL Pipeline processing for {dataset_name}",
+                tags={
+                    'dataset': dataset_name,
+                    'pipeline': 'continuous_learning',
+                    'data_rows': str(len(df)),
+                    'data_columns': str(len(df.columns))
+                }
+            )
+            
+            # Find existing experiment or create new one
+            experiment_id = None
+            for exp_id, exp_data in experiment_tracker.experiments.items():
+                if exp_data['config'].experiment_name == experiment_name:
+                    experiment_id = exp_id
+                    break
+            
+            if experiment_id is None:
+                experiment_id = experiment_tracker.create_experiment(experiment_config)
+            
+            # Start experiment run
+            run_name = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            run_id = experiment_tracker.start_run(
+                experiment_id=experiment_id,
+                run_name=run_name,
+                parameters={
+                    'dataset_name': dataset_name,
+                    'data_rows': len(df),
+                    'data_columns': len(df.columns),
+                    'processing_mode': 'continuous_learning'
+                }
+            )
+
             # AI Agent Analysis
             issues = self.ai_agent.detect_data_quality_issues(df)
             results['issues_detected'] = len(issues)
@@ -195,6 +235,34 @@ class ContinuousLearningPipeline:
             except Exception as e:
                 transformation_success = False
                 logger.warning(f"Transformation failed for {file_path}: {e}")
+            
+            # Log experiment metrics
+            experiment_tracker.log_metric(run_id, "issues_detected", len(issues))
+            experiment_tracker.log_metric(run_id, "corrections_applied", len(corrections))
+            experiment_tracker.log_metric(run_id, "suggestions_generated", len(suggestions))
+            experiment_tracker.log_metric(run_id, "predictions_made", len(predictions))
+            experiment_tracker.log_metric(run_id, "transformation_success", 1.0 if transformation_success else 0.0)
+            
+            # Log drift metrics if available
+            if 'drift_detected' in results:
+                experiment_tracker.log_metric(run_id, "drift_detected", 1.0 if results['drift_detected'] else 0.0)
+                if 'drift_severity' in results:
+                    severity_map = {'low': 0.25, 'medium': 0.5, 'high': 0.75, 'critical': 1.0}
+                    experiment_tracker.log_metric(run_id, "drift_severity_score", 
+                                                severity_map.get(results['drift_severity'], 0.0))
+            
+            # Log AI agent performance metrics
+            ai_performance = self.ai_agent.get_model_performance()
+            for metric, value in ai_performance.items():
+                if isinstance(value, (int, float)):
+                    experiment_tracker.log_metric(run_id, f"ai_{metric}", float(value))
+            
+            # End experiment run
+            experiment_tracker.end_run(
+                run_id=run_id,
+                status="completed" if results['success'] else "failed",
+                notes=f"Processed {len(df)} rows with {len(issues)} issues detected and {len(corrections)} corrections applied"
+            )
             
             results['success'] = True
             results['learning_gained'] = True
