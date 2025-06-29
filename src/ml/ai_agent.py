@@ -8,15 +8,18 @@ This module provides an AI agent that learns from data patterns to:
 - Automatically correct errors when detected
 - Learn from user corrections with backpropagation-style adaptation
 - Improve accuracy over time with continuous learning
+- Advanced confidence scoring with uncertainty estimation
+- Ensemble learning for improved accuracy and reliability
 """
 
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Tuple, Optional, Any
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from typing import Dict, List, Tuple, Optional, Any, Union
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor, VotingClassifier, BaggingClassifier
 from sklearn.preprocessing import LabelEncoder, StandardScaler
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support, classification_report
+from sklearn.calibration import CalibratedClassifierCV
 import joblib
 import json
 import os
@@ -27,6 +30,17 @@ from src.logger import get_logger
 logger = get_logger(__name__)
 
 @dataclass
+class ConfidenceScore:
+    """Advanced confidence scoring with uncertainty estimation."""
+    prediction: Any
+    confidence: float  # 0.0 to 1.0
+    uncertainty: float  # 0.0 to 1.0
+    reliability: str  # 'high', 'medium', 'low'
+    ensemble_agreement: float  # Agreement among ensemble models
+    calibration_score: float  # How well calibrated the confidence is
+    feature_importance: Dict[str, float]  # Feature importance for this prediction
+
+@dataclass
 class DataQualityIssue:
     """Represents a detected data quality issue."""
     issue_type: str
@@ -35,6 +49,7 @@ class DataQualityIssue:
     affected_columns: List[str]
     suggested_fix: str
     confidence: float
+    confidence_score: Optional[ConfidenceScore] = None
     auto_correctable: bool = False
     correction_applied: bool = False
 
@@ -46,6 +61,7 @@ class TransformationSuggestion:
     parameters: Dict[str, Any]
     confidence: float
     reasoning: str
+    confidence_score: Optional[ConfidenceScore] = None
     auto_apply: bool = False
 
 @dataclass
@@ -55,6 +71,7 @@ class ErrorPrediction:
     probability: float
     affected_data: str
     prevention_suggestion: str
+    confidence_score: Optional[ConfidenceScore] = None
     auto_prevent: bool = False
 
 @dataclass
@@ -66,7 +83,17 @@ class AutoCorrection:
     corrected_value: Any
     confidence: float
     reasoning: str
+    confidence_score: Optional[ConfidenceScore] = None
     applied: bool = True
+
+@dataclass
+class EnsemblePrediction:
+    """Represents ensemble model predictions with confidence."""
+    base_predictions: List[Any]
+    ensemble_prediction: Any
+    confidence_score: ConfidenceScore
+    model_weights: Dict[str, float]
+    agreement_score: float
 
 class ETLAIAgent:
     """
@@ -76,7 +103,7 @@ class ETLAIAgent:
     
     def __init__(self, model_dir: str = "models"):
         """
-        Initialize the AI agent.
+        Initialize the AI agent with advanced ensemble learning and confidence scoring.
         
         Args:
             model_dir: Directory to store trained models
@@ -84,11 +111,14 @@ class ETLAIAgent:
         self.model_dir = model_dir
         os.makedirs(model_dir, exist_ok=True)
         
-        # Initialize models
+        # Initialize base models
         self.data_quality_classifier = RandomForestClassifier(n_estimators=100, random_state=42)
         self.transformation_suggester = RandomForestClassifier(n_estimators=100, random_state=42)
         self.error_predictor = RandomForestClassifier(n_estimators=100, random_state=42)
         self.correction_predictor = RandomForestClassifier(n_estimators=100, random_state=42)
+        
+        # Initialize ensemble models
+        self._initialize_ensemble_models()
         
         # Data preprocessing
         self.label_encoders = {}
@@ -104,11 +134,300 @@ class ETLAIAgent:
         self.learning_rate = 0.1
         self.adaptation_history = []
         
+        # Advanced confidence scoring settings
+        self.confidence_thresholds = {
+            'high': 0.8,
+            'medium': 0.6,
+            'low': 0.4
+        }
+        self.uncertainty_estimation_enabled = True
+        self.ensemble_agreement_threshold = 0.7
+        
+        # Model calibration
+        self.calibrated_models = {}
+        self.calibration_scores = {}
+        
+        # Performance tracking
+        self.prediction_history = []
+        self.confidence_accuracy = []
+        self.ensemble_performance = {}
+        
         # Load existing models if available
         self._load_models()
         
-        logger.info("Enhanced ETL AI Agent initialized with auto-correction capabilities")
+        logger.info("Enhanced ETL AI Agent initialized with ensemble learning and advanced confidence scoring")
     
+    def _initialize_ensemble_models(self):
+        """Initialize ensemble models for improved accuracy and reliability."""
+        # Create base models for ensemble
+        base_models = [
+            ('rf1', RandomForestClassifier(n_estimators=100, random_state=42)),
+            ('rf2', RandomForestClassifier(n_estimators=150, random_state=43)),
+            ('rf3', RandomForestClassifier(n_estimators=200, random_state=44))
+        ]
+        
+        # Voting classifier for ensemble prediction
+        self.data_quality_ensemble = VotingClassifier(
+            estimators=base_models,
+            voting='soft'  # Use probability predictions
+        )
+        
+        # Bagging classifier for additional robustness
+        self.data_quality_bagging = BaggingClassifier(
+            estimator=RandomForestClassifier(n_estimators=100, random_state=42),
+            n_estimators=5,
+            random_state=42
+        )
+        
+        # Similar setup for other models
+        self.transformation_ensemble = VotingClassifier(
+            estimators=base_models,
+            voting='soft'
+        )
+        
+        self.error_prediction_ensemble = VotingClassifier(
+            estimators=base_models,
+            voting='soft'
+        )
+        
+        self.correction_ensemble = VotingClassifier(
+            estimators=base_models,
+            voting='soft'
+        )
+    
+    def calculate_confidence_score(self, model, X: np.ndarray, prediction: Any, 
+                                 feature_names: List[str] = None) -> ConfidenceScore:
+        """
+        Calculate advanced confidence score with uncertainty estimation.
+        
+        Args:
+            model: Trained model
+            X: Input features
+            prediction: Model prediction
+            feature_names: Names of features for importance calculation
+            
+        Returns:
+            ConfidenceScore object with comprehensive confidence metrics
+        """
+        try:
+            # Get prediction probabilities
+            if hasattr(model, 'predict_proba'):
+                probabilities = model.predict_proba(X)
+                confidence = np.max(probabilities, axis=1)[0]
+            else:
+                confidence = 0.5  # Default confidence for models without probabilities
+            
+            # Calculate uncertainty (entropy-based)
+            if hasattr(model, 'predict_proba'):
+                entropy = -np.sum(probabilities * np.log(probabilities + 1e-10), axis=1)[0]
+                uncertainty = entropy / np.log(len(probabilities[0]))  # Normalize to [0,1]
+            else:
+                uncertainty = 0.5
+            
+            # Determine reliability level
+            if confidence >= self.confidence_thresholds['high']:
+                reliability = 'high'
+            elif confidence >= self.confidence_thresholds['medium']:
+                reliability = 'medium'
+            else:
+                reliability = 'low'
+            
+            # Calculate ensemble agreement (if ensemble model)
+            ensemble_agreement = 1.0
+            if hasattr(model, 'estimators_'):
+                base_predictions = []
+                for estimator in model.estimators_:
+                    if hasattr(estimator, 'predict_proba'):
+                        base_pred = estimator.predict_proba(X)
+                        base_predictions.append(np.argmax(base_pred, axis=1)[0])
+                    else:
+                        base_predictions.append(estimator.predict(X)[0])
+                
+                # Calculate agreement among base models
+                unique_predictions = len(set(base_predictions))
+                ensemble_agreement = 1.0 - (unique_predictions - 1) / len(base_predictions)
+            
+            # Calculate feature importance
+            feature_importance = {}
+            if hasattr(model, 'feature_importances_') and feature_names:
+                for name, importance in zip(feature_names, model.feature_importances_):
+                    feature_importance[name] = float(importance)
+            
+            # Get calibration score
+            calibration_score = self.calibration_scores.get(type(model).__name__, 0.5)
+            
+            return ConfidenceScore(
+                prediction=prediction,
+                confidence=float(confidence),
+                uncertainty=float(uncertainty),
+                reliability=reliability,
+                ensemble_agreement=float(ensemble_agreement),
+                calibration_score=float(calibration_score),
+                feature_importance=feature_importance
+            )
+            
+        except Exception as e:
+            logger.warning(f"Error calculating confidence score: {e}")
+            return ConfidenceScore(
+                prediction=prediction,
+                confidence=0.5,
+                uncertainty=0.5,
+                reliability='low',
+                ensemble_agreement=0.0,
+                calibration_score=0.5,
+                feature_importance={}
+            )
+    
+    def ensemble_predict_with_confidence(self, X: np.ndarray, model_type: str = 'data_quality') -> EnsemblePrediction:
+        """
+        Make ensemble prediction with comprehensive confidence scoring.
+        
+        Args:
+            X: Input features
+            model_type: Type of model ('data_quality', 'transformation', 'error_prediction', 'correction')
+            
+        Returns:
+            EnsemblePrediction with confidence scores
+        """
+        try:
+            # Select appropriate ensemble model
+            if model_type == 'data_quality':
+                ensemble_model = self.data_quality_ensemble
+                base_model = self.data_quality_classifier
+            elif model_type == 'transformation':
+                ensemble_model = self.transformation_ensemble
+                base_model = self.transformation_suggester
+            elif model_type == 'error_prediction':
+                ensemble_model = self.error_prediction_ensemble
+                base_model = self.error_predictor
+            elif model_type == 'correction':
+                ensemble_model = self.correction_ensemble
+                base_model = self.correction_predictor
+            else:
+                raise ValueError(f"Unknown model type: {model_type}")
+            
+            # Get base model predictions
+            base_predictions = []
+            if hasattr(ensemble_model, 'estimators_'):
+                for estimator in ensemble_model.estimators_:
+                    pred = estimator.predict(X)[0]
+                    base_predictions.append(pred)
+            
+            # Get ensemble prediction
+            ensemble_prediction = ensemble_model.predict(X)[0]
+            
+            # Calculate confidence score
+            confidence_score = self.calculate_confidence_score(
+                ensemble_model, X, ensemble_prediction, self.feature_names
+            )
+            
+            # Calculate model weights (equal for now, could be learned)
+            model_weights = {f'model_{i}': 1.0/len(base_predictions) for i in range(len(base_predictions))}
+            
+            # Calculate agreement score
+            if base_predictions:
+                unique_predictions = len(set(base_predictions))
+                agreement_score = 1.0 - (unique_predictions - 1) / len(base_predictions)
+            else:
+                agreement_score = 1.0
+            
+            return EnsemblePrediction(
+                base_predictions=base_predictions,
+                ensemble_prediction=ensemble_prediction,
+                confidence_score=confidence_score,
+                model_weights=model_weights,
+                agreement_score=agreement_score
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in ensemble prediction: {e}")
+            # Fallback to base model
+            if model_type == 'data_quality':
+                base_model = self.data_quality_classifier
+            elif model_type == 'transformation':
+                base_model = self.transformation_suggester
+            elif model_type == 'error_prediction':
+                base_model = self.error_predictor
+            elif model_type == 'correction':
+                base_model = self.correction_predictor
+            
+            fallback_prediction = base_model.predict(X)[0]
+            fallback_confidence = self.calculate_confidence_score(base_model, X, fallback_prediction, self.feature_names)
+            
+            return EnsemblePrediction(
+                base_predictions=[fallback_prediction],
+                ensemble_prediction=fallback_prediction,
+                confidence_score=fallback_confidence,
+                model_weights={'fallback': 1.0},
+                agreement_score=1.0
+            )
+    
+    def calibrate_models(self, X: np.ndarray, y: np.ndarray, model_type: str = 'data_quality'):
+        """
+        Calibrate model confidence scores using cross-validation.
+        
+        Args:
+            X: Training features
+            y: Training labels
+            model_type: Type of model to calibrate
+        """
+        try:
+            # Select appropriate model
+            if model_type == 'data_quality':
+                model = self.data_quality_classifier
+            elif model_type == 'transformation':
+                model = self.transformation_suggester
+            elif model_type == 'error_prediction':
+                model = self.error_predictor
+            elif model_type == 'correction':
+                model = self.correction_predictor
+            else:
+                raise ValueError(f"Unknown model type: {model_type}")
+            
+            # Create calibrated model
+            calibrated_model = CalibratedClassifierCV(model, cv=5, method='isotonic')
+            calibrated_model.fit(X, y)
+            
+            # Store calibrated model
+            self.calibrated_models[model_type] = calibrated_model
+            
+            # Calculate calibration score
+            if hasattr(calibrated_model, 'predict_proba'):
+                probas = calibrated_model.predict_proba(X)
+                # Simple calibration score based on probability distribution
+                calibration_score = np.mean(np.max(probas, axis=1))
+                self.calibration_scores[model_type] = calibration_score
+            
+            logger.info(f"Model {model_type} calibrated successfully")
+            
+        except Exception as e:
+            logger.warning(f"Failed to calibrate model {model_type}: {e}")
+    
+    def update_confidence_thresholds(self, new_thresholds: Dict[str, float]):
+        """
+        Update confidence thresholds based on performance analysis.
+        
+        Args:
+            new_thresholds: Dictionary with new threshold values
+        """
+        self.confidence_thresholds.update(new_thresholds)
+        logger.info(f"Updated confidence thresholds: {self.confidence_thresholds}")
+    
+    def get_confidence_metrics(self) -> Dict[str, Any]:
+        """
+        Get comprehensive confidence scoring metrics.
+        
+        Returns:
+            Dictionary with confidence metrics
+        """
+        return {
+            'confidence_thresholds': self.confidence_thresholds,
+            'calibration_scores': self.calibration_scores,
+            'ensemble_performance': self.ensemble_performance,
+            'confidence_accuracy': self.confidence_accuracy[-10:] if self.confidence_accuracy else [],
+            'prediction_history_count': len(self.prediction_history)
+        }
+
     def _load_models(self):
         """Load pre-trained models if they exist."""
         try:
@@ -542,13 +861,13 @@ class ETLAIAgent:
 
     def detect_data_quality_issues(self, data: pd.DataFrame) -> List[DataQualityIssue]:
         """
-        Detect data quality issues using ML models.
+        Detect data quality issues using ensemble learning and advanced confidence scoring.
         
         Args:
             data: Input DataFrame
             
         Returns:
-            List of detected data quality issues
+            List of detected data quality issues with confidence scores
         """
         if data.empty:
             return []
@@ -557,31 +876,103 @@ class ETLAIAgent:
         # Extract features
         features = self.extract_features(data)
         
-        # Use ML model to predict issues (if trained)
+        # Use ensemble learning for improved accuracy
         if hasattr(self.data_quality_classifier, 'classes_'):
             try:
                 # Prepare features for prediction
                 X = self._prepare_features_for_prediction(features)
-                predictions = self.data_quality_classifier.predict(X)
-                probabilities = self.data_quality_classifier.predict_proba(X)
                 
-                # Convert predictions to issues
-                for i, pred in enumerate(predictions):
-                    if pred == 1:  # Issue detected
-                        confidence = max(probabilities[i])
-                        issues.append(DataQualityIssue(
-                            issue_type="ml_detected",
-                            severity="medium" if confidence < 0.8 else "high",
-                            description=f"ML model detected potential data quality issue (confidence: {confidence:.2f})",
-                            affected_columns=data.columns.tolist(),
-                            suggested_fix="Review data quality and apply appropriate cleaning",
-                            confidence=confidence
-                        ))
+                # Get ensemble prediction with confidence
+                ensemble_result = self.ensemble_predict_with_confidence(X, 'data_quality')
+                
+                # Convert ensemble prediction to issues
+                if ensemble_result.ensemble_prediction == 1:  # Issue detected
+                    confidence_score = ensemble_result.confidence_score
+                    
+                    # Determine severity based on confidence and uncertainty
+                    if confidence_score.confidence >= 0.9 and confidence_score.uncertainty <= 0.1:
+                        severity = "high"
+                    elif confidence_score.confidence >= 0.7 and confidence_score.uncertainty <= 0.3:
+                        severity = "medium"
+                    else:
+                        severity = "low"
+                    
+                    # Create issue with advanced confidence scoring
+                    issue = DataQualityIssue(
+                        issue_type="ensemble_detected",
+                        severity=severity,
+                        description=f"Ensemble model detected data quality issue with {confidence_score.confidence:.2f} confidence and {confidence_score.uncertainty:.2f} uncertainty",
+                        affected_columns=data.columns.tolist(),
+                        suggested_fix="Review data quality and apply appropriate cleaning based on ensemble analysis",
+                        confidence=confidence_score.confidence,
+                        confidence_score=confidence_score,
+                        auto_correctable=confidence_score.confidence >= self.auto_correction_threshold
+                    )
+                    
+                    # Add feature importance information to description
+                    if confidence_score.feature_importance:
+                        top_features = sorted(confidence_score.feature_importance.items(), 
+                                            key=lambda x: x[1], reverse=True)[:3]
+                        feature_desc = ", ".join([f"{feat}: {imp:.2f}" for feat, imp in top_features])
+                        issue.description += f" (Key features: {feature_desc})"
+                    
+                    issues.append(issue)
+                    
+                    # Log prediction for performance tracking
+                    self.prediction_history.append({
+                        'timestamp': datetime.now().isoformat(),
+                        'model_type': 'data_quality',
+                        'prediction': ensemble_result.ensemble_prediction,
+                        'confidence': confidence_score.confidence,
+                        'uncertainty': confidence_score.uncertainty,
+                        'ensemble_agreement': ensemble_result.agreement_score,
+                        'reliability': confidence_score.reliability
+                    })
+                    
             except Exception as e:
-                logger.warning(f"ML-based issue detection failed: {e}")
+                logger.warning(f"Ensemble-based issue detection failed: {e}")
+                # Fallback to basic ML model
+                try:
+                    X = self._prepare_features_for_prediction(features)
+                    predictions = self.data_quality_classifier.predict(X)
+                    probabilities = self.data_quality_classifier.predict_proba(X)
+                    
+                    for i, pred in enumerate(predictions):
+                        if pred == 1:  # Issue detected
+                            confidence = max(probabilities[i])
+                            confidence_score = self.calculate_confidence_score(
+                                self.data_quality_classifier, X, pred, self.feature_names
+                            )
+                            
+                            issues.append(DataQualityIssue(
+                                issue_type="ml_detected",
+                                severity="medium" if confidence < 0.8 else "high",
+                                description=f"ML model detected potential data quality issue (confidence: {confidence:.2f})",
+                                affected_columns=data.columns.tolist(),
+                                suggested_fix="Review data quality and apply appropriate cleaning",
+                                confidence=confidence,
+                                confidence_score=confidence_score
+                            ))
+                except Exception as e2:
+                    logger.warning(f"Fallback ML-based issue detection also failed: {e2}")
         
-        # Rule-based issue detection
-        issues.extend(self._rule_based_issue_detection(data))
+        # Rule-based issue detection with enhanced confidence
+        rule_based_issues = self._rule_based_issue_detection(data)
+        for issue in rule_based_issues:
+            # Add confidence score for rule-based issues
+            if issue.confidence_score is None:
+                # Create a basic confidence score for rule-based issues
+                issue.confidence_score = ConfidenceScore(
+                    prediction=issue.issue_type,
+                    confidence=issue.confidence,
+                    uncertainty=0.1,  # Rule-based issues have low uncertainty
+                    reliability='high' if issue.confidence >= 0.9 else 'medium',
+                    ensemble_agreement=1.0,  # Rule-based issues have full agreement
+                    calibration_score=0.9,  # Rule-based issues are well-calibrated
+                    feature_importance={}
+                )
+        
+        issues.extend(rule_based_issues)
         
         return issues
     
