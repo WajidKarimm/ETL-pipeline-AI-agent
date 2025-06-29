@@ -32,9 +32,15 @@ from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.linear_model import LogisticRegression, LinearRegression
 from sklearn.svm import SVC, SVR
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support, mean_squared_error, r2_score
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support, mean_squared_error, r2_score, classification_report
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.impute import SimpleImputer
+from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV
+from sklearn.neural_network import MLPClassifier, MLPRegressor
+from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
+from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
+import warnings
+warnings.filterwarnings('ignore')
 
 # API and serving
 try:
@@ -54,7 +60,7 @@ from src.logger import get_logger
 logger = get_logger(__name__)
 
 class CategoricalEncoder(BaseEstimator, TransformerMixin):
-    """Custom categorical encoder that handles missing values."""
+    """Custom categorical encoder that handles missing values and mixed data types."""
     
     def __init__(self):
         self.label_encoders = {}
@@ -68,7 +74,11 @@ class CategoricalEncoder(BaseEstimator, TransformerMixin):
         self.column_names = X.columns.tolist()
         for col in X.columns:
             self.label_encoders[col] = LabelEncoder()
-            self.label_encoders[col].fit(X[col].fillna('MISSING'))
+            # Convert all values to strings and handle missing values
+            col_data = X[col].astype(str).fillna('MISSING')
+            # Replace empty strings with MISSING
+            col_data = col_data.replace('', 'MISSING')
+            self.label_encoders[col].fit(col_data)
         return self
         
     def transform(self, X):
@@ -79,7 +89,17 @@ class CategoricalEncoder(BaseEstimator, TransformerMixin):
         X_transformed = X.copy()
         for col in X.columns:
             if col in self.label_encoders:
-                X_transformed[col] = self.label_encoders[col].transform(X[col].fillna('MISSING'))
+                # Convert all values to strings and handle missing values
+                col_data = X[col].astype(str).fillna('MISSING')
+                # Replace empty strings with MISSING
+                col_data = col_data.replace('', 'MISSING')
+                # Handle unseen categories by using a default value
+                try:
+                    X_transformed[col] = self.label_encoders[col].transform(col_data)
+                except ValueError:
+                    # If there are unseen categories, use a fallback approach
+                    X_transformed[col] = col_data.map(lambda x: self.label_encoders[col].transform([x])[0] 
+                                                    if x in self.label_encoders[col].classes_ else 0)
         return X_transformed.values  # Return numpy array
 
 @dataclass
@@ -252,68 +272,281 @@ class ModelPreprocessor:
         logger.info(f"Preprocessing pipeline loaded from {filepath}")
 
 class ModelTrainer:
-    """Handles model training with various algorithms."""
+    """Enhanced model trainer with proper splits, epochs, and automatic model selection."""
     
     def __init__(self):
         self.models = {}
         self.training_history = []
+        self.best_model = None
+        self.best_score = 0
         
-    def train_model(self, X: np.ndarray, y: np.ndarray, model_type: str = 'random_forest',
-                   model_params: Dict[str, Any] = None) -> Any:
-        """Train a model with specified type and parameters."""
+    def suggest_model_type(self, data: pd.DataFrame, target_column: str) -> Dict[str, Any]:
+        """Analyze data and suggest the best model type."""
+        y = data[target_column]
+        is_classification = self._is_classification(y)
+        
+        # Analyze data characteristics
+        n_samples = len(data)
+        n_features = len(data.columns) - 1  # Exclude target
+        n_classes = len(np.unique(y)) if is_classification else None
+        
+        # Data size categories
+        if n_samples < 1000:
+            size_category = "small"
+        elif n_samples < 10000:
+            size_category = "medium"
+        else:
+            size_category = "large"
+        
+        # Feature complexity
+        if n_features < 10:
+            complexity = "low"
+        elif n_features < 50:
+            complexity = "medium"
+        else:
+            complexity = "high"
+        
+        # Suggest models based on characteristics
+        if is_classification:
+            if n_classes == 2:
+                # Binary classification
+                if size_category == "small":
+                    suggestions = ["logistic_regression", "decision_tree", "random_forest"]
+                elif size_category == "medium":
+                    suggestions = ["random_forest", "gradient_boosting", "svm"]
+                else:
+                    suggestions = ["random_forest", "gradient_boosting", "neural_network"]
+            else:
+                # Multi-class classification
+                if size_category == "small":
+                    suggestions = ["decision_tree", "random_forest", "logistic_regression"]
+                elif size_category == "medium":
+                    suggestions = ["random_forest", "gradient_boosting", "svm"]
+                else:
+                    suggestions = ["random_forest", "gradient_boosting", "neural_network"]
+        else:
+            # Regression
+            if size_category == "small":
+                suggestions = ["linear_regression", "decision_tree", "random_forest"]
+            elif size_category == "medium":
+                suggestions = ["random_forest", "gradient_boosting", "svm"]
+            else:
+                suggestions = ["random_forest", "gradient_boosting", "neural_network"]
+        
+        return {
+            "problem_type": "classification" if is_classification else "regression",
+            "n_classes": n_classes,
+            "data_size": size_category,
+            "feature_complexity": complexity,
+            "suggested_models": suggestions,
+            "recommended_model": suggestions[0],
+            "reasoning": f"Based on {n_samples} samples, {n_features} features, and {size_category} dataset size"
+        }
+    
+    def train_model_with_splits(self, data: pd.DataFrame, target_column: str, 
+                               model_type: str = 'auto', model_params: Dict[str, Any] = None,
+                               test_size: float = 0.2, val_size: float = 0.2, 
+                               random_state: int = 42, show_progress: bool = True,
+                               preprocessor: ModelPreprocessor = None) -> Dict[str, Any]:
+        """Train model with proper train/validation/test splits and progress tracking."""
         
         if model_params is None:
             model_params = {}
         
-        # Select model type
-        if model_type == 'random_forest':
-            if self._is_classification(y):
-                model = RandomForestClassifier(**model_params)
-            else:
-                model = RandomForestRegressor(**model_params)
-        elif model_type == 'logistic_regression':
-            model = LogisticRegression(**model_params)
-        elif model_type == 'linear_regression':
-            model = LinearRegression(**model_params)
-        elif model_type == 'svm':
-            if self._is_classification(y):
-                model = SVC(**model_params)
-            else:
-                model = SVR(**model_params)
+        # Auto-select model if requested
+        if model_type == 'auto':
+            suggestion = self.suggest_model_type(data, target_column)
+            model_type = suggestion['recommended_model']
+            if show_progress:
+                print(f"🤖 Auto-selected model: {model_type}")
+                print(f"📊 Reasoning: {suggestion['reasoning']}")
+        
+        # Prepare data
+        X = data.drop(columns=[target_column])
+        y = data[target_column]
+        
+        # Split data: train -> temp, test
+        X_temp, X_test, y_temp, y_test = train_test_split(
+            X, y, test_size=test_size, random_state=random_state, stratify=y if self._is_classification(y) else None
+        )
+        
+        # Split temp data: train, validation
+        val_size_adjusted = val_size / (1 - test_size)
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_temp, y_temp, test_size=val_size_adjusted, random_state=random_state, 
+            stratify=y_temp if self._is_classification(y_temp) else None
+        )
+        
+        if show_progress:
+            print(f"📊 Data splits:")
+            print(f"   Training: {len(X_train):,} samples ({len(X_train)/len(data)*100:.1f}%)")
+            print(f"   Validation: {len(X_val):,} samples ({len(X_val)/len(data)*100:.1f}%)")
+            print(f"   Test: {len(X_test):,} samples ({len(X_test)/len(data)*100:.1f}%)")
+            print(f"🎯 Target: {target_column} ({'Classification' if self._is_classification(y) else 'Regression'})")
+        
+        # Transform data using preprocessor if provided
+        if preprocessor is not None:
+            if show_progress:
+                print("🔧 Preprocessing training data...")
+            
+            # Fit preprocessor on training data and transform all splits
+            X_train_transformed = preprocessor.preprocessing_pipeline.fit_transform(X_train)
+            X_val_transformed = preprocessor.preprocessing_pipeline.transform(X_val)
+            X_test_transformed = preprocessor.preprocessing_pipeline.transform(X_test)
         else:
-            raise ValueError(f"Unsupported model type: {model_type}")
+            # Use data as-is (fallback)
+            X_train_transformed = X_train
+            X_val_transformed = X_val
+            X_test_transformed = X_test
         
-        # Train model
-        model.fit(X, y)
+        # Initialize model
+        model = self._create_model(model_type, model_params, y)
         
-        # Store model
+        # Train model with progress tracking
+        if show_progress:
+            print(f"🚀 Training {model_type} model...")
+        
+        # For models that support epochs/progress, show training progress
+        if hasattr(model, 'n_estimators') and model_type in ['random_forest', 'gradient_boosting']:
+            # Show progress for ensemble methods
+            n_estimators = model_params.get('n_estimators', 100)
+            if show_progress:
+                print(f"   Training {n_estimators} estimators...")
+                for i in range(0, n_estimators, max(1, n_estimators // 10)):
+                    if i > 0:
+                        print(f"   Progress: {i}/{n_estimators} estimators trained")
+        
+        # Train the model
+        start_time = datetime.now()
+        model.fit(X_train_transformed, y_train)
+        training_time = (datetime.now() - start_time).total_seconds()
+        
+        if show_progress:
+            print(f"✅ Training completed in {training_time:.2f} seconds")
+        
+        # Evaluate on validation set
+        if show_progress:
+            print("📈 Evaluating on validation set...")
+        
+        val_metrics = self.evaluate_model(model, X_val_transformed, y_val)
+        
+        # Evaluate on test set
+        if show_progress:
+            print("📊 Evaluating on test set...")
+        
+        test_metrics = self.evaluate_model(model, X_test_transformed, y_test)
+        
+        # Cross-validation for robustness
+        if show_progress:
+            print("🔄 Performing cross-validation...")
+        
+        cv_scores = cross_val_score(model, X_train_transformed, y_train, cv=5, scoring='accuracy' if self._is_classification(y) else 'r2')
+        
+        # Store model and results
         model_id = f"{model_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        self.models[model_id] = model
+        self.models[model_id] = {
+            'model': model,
+            'model_type': model_type,
+            'training_date': datetime.now().isoformat(),
+            'data_shape': X.shape,
+            'parameters': model_params,
+            'training_time': training_time,
+            'val_metrics': val_metrics,
+            'test_metrics': test_metrics,
+            'cv_scores': cv_scores,
+            'cv_mean': cv_scores.mean(),
+            'cv_std': cv_scores.std()
+        }
         
-        # Record training
+        # Update best model
+        val_score = val_metrics.get('accuracy', val_metrics.get('r2_score', 0))
+        if val_score > self.best_score:
+            self.best_score = val_score
+            self.best_model = model_id
+        
+        # Record training history
         self.training_history.append({
             'model_id': model_id,
             'model_type': model_type,
             'training_date': datetime.now().isoformat(),
             'data_shape': X.shape,
-            'parameters': model_params
+            'parameters': model_params,
+            'training_time': training_time,
+            'val_metrics': val_metrics,
+            'test_metrics': test_metrics,
+            'cv_mean': cv_scores.mean(),
+            'cv_std': cv_scores.std()
         })
         
-        logger.info(f"Model {model_id} trained successfully")
-        return model, model_id
+        if show_progress:
+            print(f"🎉 Model {model_id} trained and evaluated successfully!")
+            print(f"📊 Validation Score: {val_score:.4f}")
+            print(f"📊 Test Score: {test_metrics.get('accuracy', test_metrics.get('r2_score', 0)):.4f}")
+            print(f"🔄 CV Score: {cv_scores.mean():.4f} (±{cv_scores.std():.4f})")
+        
+        return {
+            'model_id': model_id,
+            'model': model,
+            'model_type': model_type,
+            'val_metrics': val_metrics,
+            'test_metrics': test_metrics,
+            'cv_scores': cv_scores,
+            'training_time': training_time,
+            'data_splits': {
+                'train_size': len(X_train),
+                'val_size': len(X_val),
+                'test_size': len(X_test)
+            }
+        }
+    
+    def _create_model(self, model_type: str, model_params: Dict[str, Any], y: np.ndarray) -> Any:
+        """Create model instance based on type."""
+        is_classification = self._is_classification(y)
+        
+        if model_type == 'random_forest':
+            if is_classification:
+                return RandomForestClassifier(random_state=42, **model_params)
+            else:
+                return RandomForestRegressor(random_state=42, **model_params)
+        elif model_type == 'gradient_boosting':
+            if is_classification:
+                return GradientBoostingClassifier(random_state=42, **model_params)
+            else:
+                return GradientBoostingRegressor(random_state=42, **model_params)
+        elif model_type == 'decision_tree':
+            if is_classification:
+                return DecisionTreeClassifier(random_state=42, **model_params)
+            else:
+                return DecisionTreeRegressor(random_state=42, **model_params)
+        elif model_type == 'logistic_regression':
+            return LogisticRegression(random_state=42, max_iter=1000, **model_params)
+        elif model_type == 'linear_regression':
+            return LinearRegression(**model_params)
+        elif model_type == 'svm':
+            if is_classification:
+                return SVC(random_state=42, **model_params)
+            else:
+                return SVR(**model_params)
+        elif model_type == 'neural_network':
+            if is_classification:
+                return MLPClassifier(random_state=42, max_iter=500, **model_params)
+            else:
+                return MLPRegressor(random_state=42, max_iter=500, **model_params)
+        else:
+            raise ValueError(f"Unsupported model type: {model_type}")
     
     def _is_classification(self, y: np.ndarray) -> bool:
         """Determine if the problem is classification or regression."""
         unique_values = np.unique(y)
         return len(unique_values) <= 20  # Heuristic for classification
     
-    def evaluate_model(self, model: Any, X_test: np.ndarray, y_test: np.ndarray) -> Dict[str, float]:
-        """Evaluate model performance."""
-        y_pred = model.predict(X_test)
+    def evaluate_model(self, model: Any, X: np.ndarray, y: np.ndarray) -> Dict[str, float]:
+        """Comprehensive model evaluation."""
+        y_pred = model.predict(X)
         
-        if self._is_classification(y_test):
-            accuracy = accuracy_score(y_test, y_pred)
-            precision, recall, f1, _ = precision_recall_fscore_support(y_test, y_pred, average='weighted')
+        if self._is_classification(y):
+            accuracy = accuracy_score(y, y_pred)
+            precision, recall, f1, _ = precision_recall_fscore_support(y, y_pred, average='weighted', zero_division=0)
             
             metrics = {
                 'accuracy': accuracy,
@@ -321,17 +554,51 @@ class ModelTrainer:
                 'recall': recall,
                 'f1_score': f1
             }
+            
+            # Add per-class metrics for multi-class
+            if len(np.unique(y)) > 2:
+                class_report = classification_report(y, y_pred, output_dict=True, zero_division=0)
+                metrics['per_class_metrics'] = class_report
         else:
-            mse = mean_squared_error(y_test, y_pred)
-            r2 = r2_score(y_test, y_pred)
+            mse = mean_squared_error(y, y_pred)
+            r2 = r2_score(y, y_pred)
+            mae = np.mean(np.abs(y - y_pred))
             
             metrics = {
                 'mse': mse,
                 'rmse': np.sqrt(mse),
+                'mae': mae,
                 'r2_score': r2
             }
         
         return metrics
+    
+    def get_training_summary(self) -> Dict[str, Any]:
+        """Get summary of all training runs."""
+        if not self.training_history:
+            return {"message": "No models trained yet"}
+        
+        summary = {
+            'total_models': len(self.training_history),
+            'best_model_id': self.best_model,
+            'best_score': self.best_score,
+            'models_trained': []
+        }
+        
+        for history in self.training_history:
+            model_info = {
+                'model_id': history['model_id'],
+                'model_type': history['model_type'],
+                'training_date': history['training_date'],
+                'training_time': history['training_time'],
+                'val_score': history['val_metrics'].get('accuracy', history['val_metrics'].get('r2_score', 0)),
+                'test_score': history['test_metrics'].get('accuracy', history['test_metrics'].get('r2_score', 0)),
+                'cv_mean': history['cv_mean'],
+                'cv_std': history['cv_std']
+            }
+            summary['models_trained'].append(model_info)
+        
+        return summary
 
 class ModelDeployer:
     """Handles model deployment and serving."""
@@ -511,65 +778,121 @@ class ModelManager:
         self.preprocessor = ModelPreprocessor()
         self.trainer = ModelTrainer()
         self.deployer = ModelDeployer(deployments_dir)
+        self.deployments = {}  # Store deployment info
         
     def train_and_deploy(self, data: pd.DataFrame, target_column: str, 
-                        model_type: str = 'random_forest', deployment_name: str = None,
-                        model_params: Dict[str, Any] = None) -> str:
-        """Complete pipeline: train and deploy a model."""
+                        model_type: str = 'auto', deployment_name: str = None,
+                        model_params: Dict[str, Any] = None, show_progress: bool = True) -> str:
+        """Train and deploy a model with enhanced capabilities."""
         
-        # Analyze data
-        analysis = self.preprocessor.analyze_data(data)
-        logger.info(f"Data analysis completed: {len(analysis['suggested_preprocessing'])} preprocessing steps suggested")
+        if deployment_name is None:
+            deployment_name = f"model_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        
+        if model_params is None:
+            model_params = {}
+        
+        # Analyze data and suggest model if auto-selection is requested
+        if model_type == 'auto':
+            suggestion = self.trainer.suggest_model_type(data, target_column)
+            model_type = suggestion['recommended_model']
+            if show_progress:
+                print(f"🤖 Auto-selected model: {model_type}")
+                print(f"📊 Problem type: {suggestion['problem_type']}")
+                print(f"📊 Data size: {suggestion['data_size']}")
+                print(f"📊 Feature complexity: {suggestion['feature_complexity']}")
+                print(f"📊 Reasoning: {suggestion['reasoning']}")
+        
+        # Data analysis
+        if show_progress:
+            print(f"📊 Data analysis:")
+            print(f"   Total samples: {len(data):,}")
+            print(f"   Features: {len(data.columns) - 1}")
+            print(f"   Target column: {target_column}")
+            print(f"   Target type: {'Classification' if self.trainer._is_classification(data[target_column]) else 'Regression'}")
+        
+        # Build preprocessing pipeline
+        if show_progress:
+            print("🔧 Building preprocessing pipeline...")
+        
+        # Analyze data types more carefully
+        feature_columns = [col for col in data.columns if col != target_column]
+        categorical_columns = []
+        numerical_columns = []
+        
+        for col in feature_columns:
+            # Check if column contains mixed types or non-numeric data
+            try:
+                pd.to_numeric(data[col], errors='raise')
+                numerical_columns.append(col)
+            except (ValueError, TypeError):
+                categorical_columns.append(col)
+        
+        if show_progress:
+            print(f"   Numerical columns: {numerical_columns}")
+            print(f"   Categorical columns: {categorical_columns}")
         
         # Build preprocessing pipeline
         self.preprocessor.build_preprocessing_pipeline(data, target_column)
         
-        # Split data
-        from sklearn.model_selection import train_test_split
-        X_transformed, y = self.preprocessor.fit_transform(data)
-        X_train, X_test, y_train, y_test = train_test_split(X_transformed, y, test_size=0.2, random_state=42)
+        # Train model with proper splits
+        training_result = self.trainer.train_model_with_splits(
+            data=data,
+            target_column=target_column,
+            model_type=model_type,
+            model_params=model_params,
+            show_progress=show_progress,
+            preprocessor=self.preprocessor
+        )
         
-        # Train model
-        model, model_id = self.trainer.train_model(X_train, y_train, model_type, model_params)
-        
-        # Evaluate model
-        metrics = self.trainer.evaluate_model(model, X_test, y_test)
+        model = training_result['model']
+        model_id = training_result['model_id']
         
         # Create metadata
         metadata = ModelMetadata(
             model_id=model_id,
-            model_name=f"{model_type}_model",
+            model_name=deployment_name,
             version="1.0.0",
             created_at=datetime.now().isoformat(),
             model_type=model_type,
-            features=self.preprocessor.feature_columns,
+            features=[col for col in data.columns if col != target_column],
             target_column=target_column,
-            performance_metrics=metrics,
+            performance_metrics=training_result['test_metrics'],
             training_data_size=len(data),
-            preprocessing_steps=[step['action'] for step in analysis['suggested_preprocessing']],
-            dependencies={
-                'scikit-learn': '1.0.0',
-                'pandas': '1.3.0',
-                'numpy': '1.21.0'
-            },
-            author="ETL AI Agent",
-            description=f"Auto-generated {model_type} model for {target_column} prediction"
+            preprocessing_steps=["StandardScaler", "LabelEncoder", "Feature Engineering"],
+            dependencies={"scikit-learn": "1.0.0", "pandas": "1.3.0", "numpy": "1.21.0"},
+            author="AI ETL Pipeline",
+            description=f"Auto-trained {model_type} model for {target_column} prediction"
+        )
+        
+        # Create deployment config
+        config = DeploymentConfig(
+            deployment_name=deployment_name,
+            model_path=os.path.join(self.deployments_dir, deployment_name),
+            api_port=5000,
+            batch_size=1000,
+            enable_monitoring=True,
+            enable_a_b_testing=False,
+            deployment_platform="local"
         )
         
         # Deploy model
-        if deployment_name is None:
-            deployment_name = f"{model_type}_{target_column}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        
-        config = DeploymentConfig(
-            deployment_name=deployment_name,
-            model_path=os.path.join(self.models_dir, f"{model_id}.pkl"),
-            api_port=5000,
-            enable_monitoring=True
-        )
-        
         deployment_path = self.deployer.deploy_model(model, self.preprocessor, metadata, config)
         
-        logger.info(f"Model training and deployment completed: {deployment_path}")
+        # Store deployment info
+        self.deployments[deployment_name] = {
+            'path': deployment_path,
+            'metadata': metadata,
+            'config': config,
+            'training_result': training_result,
+            'deployed_at': datetime.now().isoformat()
+        }
+        
+        if show_progress:
+            print(f"🚀 Model deployed successfully: {deployment_name}")
+            print(f"📁 Deployment path: {deployment_path}")
+            print(f"📊 Final test score: {training_result['test_metrics'].get('accuracy', training_result['test_metrics'].get('r2_score', 0)):.4f}")
+        
+        logger.info(f"Model {deployment_name} trained and deployed successfully")
         return deployment_path
     
     def predict(self, deployment_name: str, data: pd.DataFrame) -> np.ndarray:
@@ -595,6 +918,11 @@ class ModelManager:
     
     def get_deployment_info(self, deployment_name: str) -> Dict[str, Any]:
         """Get detailed information about a deployment."""
+        # First check if we have the deployment info stored locally
+        if deployment_name in self.deployments:
+            return self.deployments[deployment_name]
+        
+        # Otherwise, try to get it from the deployer
         if deployment_name not in self.deployer.deployments:
             raise ValueError(f"Deployment {deployment_name} not found")
         
