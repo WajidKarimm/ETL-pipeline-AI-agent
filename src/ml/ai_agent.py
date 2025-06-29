@@ -550,6 +550,8 @@ class ETLAIAgent:
         Returns:
             List of detected data quality issues
         """
+        if data.empty:
+            return []
         issues = []
         
         # Extract features
@@ -585,6 +587,8 @@ class ETLAIAgent:
     
     def _rule_based_issue_detection(self, data: pd.DataFrame) -> List[DataQualityIssue]:
         """Detect issues using rule-based approach."""
+        if data.empty:
+            return []
         issues = []
         
         # Check for missing values

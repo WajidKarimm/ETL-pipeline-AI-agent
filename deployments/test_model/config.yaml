@@ -1,0 +1,8 @@
+api_port: 5000
+batch_size: 1000
+deployment_name: test_model
+deployment_platform: local
+enable_a_b_testing: false
+enable_monitoring: true
+model_path: deployments\test_model
+scaling_config: null

@@ -59,6 +59,42 @@ from src.logger import get_logger
 
 logger = get_logger(__name__)
 
+class DateTimeTransformer(BaseEstimator, TransformerMixin):
+    """Transform datetime columns into numerical features."""
+    
+    def __init__(self):
+        self.datetime_columns = []
+        
+    def fit(self, X, y=None):
+        # Convert to DataFrame if it's a numpy array
+        if isinstance(X, np.ndarray):
+            X = pd.DataFrame(X)
+        
+        # Identify datetime columns
+        self.datetime_columns = X.select_dtypes(include=['datetime']).columns.tolist()
+        return self
+    
+    def transform(self, X):
+        # Convert to DataFrame if it's a numpy array
+        if isinstance(X, np.ndarray):
+            X = pd.DataFrame(X)
+        
+        X_transformed = X.copy()
+        
+        for col in self.datetime_columns:
+            if col in X_transformed.columns:
+                # Extract datetime features
+                X_transformed[f'{col}_year'] = X_transformed[col].dt.year
+                X_transformed[f'{col}_month'] = X_transformed[col].dt.month
+                X_transformed[f'{col}_day'] = X_transformed[col].dt.day
+                X_transformed[f'{col}_dayofweek'] = X_transformed[col].dt.dayofweek
+                X_transformed[f'{col}_quarter'] = X_transformed[col].dt.quarter
+                
+                # Remove original datetime column
+                X_transformed = X_transformed.drop(columns=[col])
+        
+        return X_transformed
+
 class CategoricalEncoder(BaseEstimator, TransformerMixin):
     """Custom categorical encoder that handles missing values and mixed data types."""
     
@@ -190,34 +226,57 @@ class ModelPreprocessor:
         self.target_column = target_column
         self.feature_columns = [col for col in data.columns if col != target_column]
         
-        # Analyze data types
-        self.categorical_columns = data[self.feature_columns].select_dtypes(include=['object', 'category']).columns.tolist()
-        self.numerical_columns = data[self.feature_columns].select_dtypes(include=['int64', 'float64']).columns.tolist()
-        self.datetime_columns = data[self.feature_columns].select_dtypes(include=['datetime']).columns.tolist()
+        # Data analysis
+        if show_progress:
+            print(f"📊 Data analysis:")
+            print(f"   Total samples: {len(data):,}")
+            print(f"   Features: {len(data.columns) - 1}")
+            print(f"   Target column: {target_column}")
+            print(f"   Target type: {'Classification' if self.trainer._is_classification(data[target_column]) else 'Regression'}")
         
-        # Build preprocessing transformers
-        transformers = []
+        # Build preprocessing pipeline
+        if show_progress:
+            print("🔧 Building preprocessing pipeline...")
         
-        # Numerical preprocessing
-        if self.numerical_columns:
-            numerical_transformer = Pipeline([
-                ('imputer', SimpleImputer(strategy='median')),
-                ('scaler', StandardScaler())
-            ])
-            transformers.append(('numerical', numerical_transformer, self.numerical_columns))
+        # Analyze data types more carefully
+        feature_columns = [col for col in data.columns if col != target_column]
+        categorical_columns = []
+        numerical_columns = []
+        datetime_columns = []
         
-        # Categorical preprocessing
-        if self.categorical_columns:
-            categorical_transformer = Pipeline([
-                ('imputer', SimpleImputer(strategy='constant', fill_value='MISSING')),
-                ('encoder', CategoricalEncoder())
-            ])
-            transformers.append(('categorical', categorical_transformer, self.categorical_columns))
+        for col in feature_columns:
+            # Check if column is datetime
+            if pd.api.types.is_datetime64_any_dtype(data[col]):
+                datetime_columns.append(col)
+            # Check if column contains mixed types or non-numeric data
+            elif pd.api.types.is_numeric_dtype(data[col]):
+                numerical_columns.append(col)
+            else:
+                categorical_columns.append(col)
         
-        # Create preprocessing pipeline
+        if show_progress:
+            print(f"   Numerical columns: {numerical_columns}")
+            print(f"   Categorical columns: {categorical_columns}")
+            print(f"   Datetime columns: {datetime_columns}")
+        
+        # Build preprocessing pipeline
         self.preprocessing_pipeline = ColumnTransformer(
-            transformers=transformers,
-            remainder='passthrough'
+            transformers=[
+                ('numerical', Pipeline([
+                    ('imputer', SimpleImputer(strategy='median')),
+                    ('scaler', StandardScaler())
+                ]), numerical_columns),
+                ('categorical', Pipeline([
+                    ('imputer', SimpleImputer(strategy='constant', fill_value='MISSING')),
+                    ('encoder', CategoricalEncoder())
+                ]), categorical_columns),
+                ('datetime', Pipeline([
+                    ('datetime_features', DateTimeTransformer()),
+                    ('imputer', SimpleImputer(strategy='median')),
+                    ('scaler', StandardScaler())
+                ]), datetime_columns)
+            ],
+            remainder='drop'  # Drop any remaining columns to avoid data type conflicts
         )
         
         return self.preprocessing_pipeline
@@ -818,18 +877,22 @@ class ModelManager:
         feature_columns = [col for col in data.columns if col != target_column]
         categorical_columns = []
         numerical_columns = []
+        datetime_columns = []
         
         for col in feature_columns:
+            # Check if column is datetime
+            if pd.api.types.is_datetime64_any_dtype(data[col]):
+                datetime_columns.append(col)
             # Check if column contains mixed types or non-numeric data
-            try:
-                pd.to_numeric(data[col], errors='raise')
+            elif pd.api.types.is_numeric_dtype(data[col]):
                 numerical_columns.append(col)
-            except (ValueError, TypeError):
+            else:
                 categorical_columns.append(col)
         
         if show_progress:
             print(f"   Numerical columns: {numerical_columns}")
             print(f"   Categorical columns: {categorical_columns}")
+            print(f"   Datetime columns: {datetime_columns}")
         
         # Build preprocessing pipeline
         self.preprocessor.build_preprocessing_pipeline(data, target_column)
@@ -848,6 +911,13 @@ class ModelManager:
         model_id = training_result['model_id']
         
         # Create metadata
+        # Prepare performance metrics including cv_mean
+        performance_metrics = training_result['test_metrics'].copy()
+        if 'cv_mean' in training_result:
+            performance_metrics['cv_mean'] = training_result['cv_mean']
+        if 'cv_std' in training_result:
+            performance_metrics['cv_std'] = training_result['cv_std']
+        
         metadata = ModelMetadata(
             model_id=model_id,
             model_name=deployment_name,
@@ -856,7 +926,7 @@ class ModelManager:
             model_type=model_type,
             features=[col for col in data.columns if col != target_column],
             target_column=target_column,
-            performance_metrics=training_result['test_metrics'],
+            performance_metrics=performance_metrics,
             training_data_size=len(data),
             preprocessing_steps=["StandardScaler", "LabelEncoder", "Feature Engineering"],
             dependencies={"scikit-learn": "1.0.0", "pandas": "1.3.0", "numpy": "1.21.0"},
