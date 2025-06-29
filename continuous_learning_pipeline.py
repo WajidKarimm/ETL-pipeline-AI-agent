@@ -22,6 +22,7 @@ sys.path.append('.')
 
 from src.ml.ai_agent import ETLAIAgent
 from src.transformers.clean_transformer import CleanTransformer
+from src.validation.data_validator import DataValidator
 
 # Configure logging
 logging.basicConfig(
@@ -124,7 +125,19 @@ class ContinuousLearningPipeline:
                 raise ValueError(f"Unsupported file format: {file_path}")
             
             results['rows_processed'] = len(df)
-            
+
+            # Data Validation
+            validator = DataValidator()
+            validation_report = validator.validate_dataset(df, dataset_name=os.path.basename(file_path))
+            # Store validation report
+            validation_report_path = f"validation/validation_report_{os.path.basename(file_path)}.json"
+            validator.export_validation_report(validation_report, validation_report_path)
+            # If any critical failures, skip further processing
+            if validation_report.critical_failures > 0:
+                results['error'] = f"Critical validation failures: {validation_report.critical_failures}. See {validation_report_path}"
+                logger.error(results['error'])
+                return results
+
             # AI Agent Analysis
             issues = self.ai_agent.detect_data_quality_issues(df)
             results['issues_detected'] = len(issues)
